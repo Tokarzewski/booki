@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.content.IntentCompat
 import dev.booki.audio.AudioPreview
 import dev.booki.audio.M4aMuxer
 import dev.booki.epub.EpubReader
@@ -48,9 +49,8 @@ class SynthesisService : Service() {
             return START_NOT_STICKY
         }
 
-        val uri = intent?.getParcelableExtra<Uri>(EXTRA_URI) ?: run {
-            stopSelf(); return START_NOT_STICKY
-        }
+        val uri = intent?.let { IntentCompat.getParcelableExtra(it, EXTRA_URI, Uri::class.java) }
+            ?: run { stopSelf(); return START_NOT_STICKY }
         val voice = intent.getStringExtra(EXTRA_VOICE) ?: "af_sky"
         val speed = intent.getFloatExtra(EXTRA_SPEED, 1f)
         val streamLive = intent.getBooleanExtra(EXTRA_STREAM_LIVE, false)

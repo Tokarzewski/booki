@@ -37,29 +37,59 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Home, Catalog }
+private sealed interface Screen {
+    data object Home : Screen
+    data object Catalog : Screen
+    data class Picker(val uri: Uri, val voice: String, val speed: Float, val streamLive: Boolean) : Screen
+}
 
 @Composable
 private fun Root() {
     val context = LocalContextSafe.current
     var provisioned by remember { mutableStateOf(ModelDownloader.isProvisioned(context)) }
-    var screen by remember { mutableStateOf(Screen.Home) }
+    var screen: Screen by remember { mutableStateOf(Screen.Home) }
 
     LaunchedEffect(Unit) { Library.refresh(context) }
 
     if (!provisioned) {
         SetupScreen(onProvisioned = { provisioned = true })
-    } else when (screen) {
-        Screen.Home -> BookiApp(onOpenCatalog = { screen = Screen.Catalog })
+        return
+    }
+
+    when (val s = screen) {
+        Screen.Home -> BookiApp(
+            onOpenCatalog = { screen = Screen.Catalog },
+            onOpenPicker = { uri, voice, speed, streamLive ->
+                screen = Screen.Picker(uri, voice, speed, streamLive)
+            },
+        )
         Screen.Catalog -> CatalogScreen(onBack = {
             Library.refresh(context); screen = Screen.Home
         })
+        is Screen.Picker -> ChapterPickerScreen(
+            epubUri = s.uri,
+            onCancel = { screen = Screen.Home },
+            onConfirm = { indices ->
+                val intent = Intent(context, SynthesisService::class.java).apply {
+                    putExtra(SynthesisService.EXTRA_URI, s.uri)
+                    putExtra(SynthesisService.EXTRA_VOICE, s.voice)
+                    putExtra(SynthesisService.EXTRA_SPEED, s.speed)
+                    putExtra(SynthesisService.EXTRA_STREAM_LIVE, s.streamLive)
+                    putExtra(SynthesisService.EXTRA_CHAPTERS, indices)
+                }
+                context.startForegroundService(intent)
+                screen = Screen.Home
+            },
+        )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookiApp(onOpenCatalog: () -> Unit) {
+fun BookiApp(
+    onOpenCatalog: () -> Unit,
+    onOpenPicker: (Uri, voice: String, speed: Float, streamLive: Boolean) -> Unit,
+) {
     val context = LocalContextSafe.current
     var epubUri by remember { mutableStateOf<Uri?>(null) }
     var epubLabel by remember { mutableStateOf<String?>(null) }
@@ -190,19 +220,26 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
                 }
             }
 
-            Button(
-                enabled = epubUri != null && state !is SynthState.Running,
-                onClick = {
-                    val uri = epubUri ?: return@Button
-                    val intent = Intent(context, SynthesisService::class.java).apply {
-                        putExtra(SynthesisService.EXTRA_URI, uri)
-                        putExtra(SynthesisService.EXTRA_VOICE, voice)
-                        putExtra(SynthesisService.EXTRA_SPEED, speed)
-                        putExtra(SynthesisService.EXTRA_STREAM_LIVE, streamLive)
-                    }
-                    context.startForegroundService(intent)
-                },
-            ) { Text(if (streamLive) "Generate + play" else "Generate audiobook") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = epubUri != null && state !is SynthState.Running,
+                    onClick = {
+                        val uri = epubUri ?: return@Button
+                        val intent = Intent(context, SynthesisService::class.java).apply {
+                            putExtra(SynthesisService.EXTRA_URI, uri)
+                            putExtra(SynthesisService.EXTRA_VOICE, voice)
+                            putExtra(SynthesisService.EXTRA_SPEED, speed)
+                            putExtra(SynthesisService.EXTRA_STREAM_LIVE, streamLive)
+                        }
+                        context.startForegroundService(intent)
+                    },
+                ) { Text(if (streamLive) "Generate + play" else "Generate") }
+
+                OutlinedButton(
+                    enabled = epubUri != null && state !is SynthState.Running,
+                    onClick = { epubUri?.let { onOpenPicker(it, voice, speed, streamLive) } },
+                ) { Text("Pick chapters…") }
+            }
 
             if (state is SynthState.Running) {
                 OutlinedButton(onClick = {
