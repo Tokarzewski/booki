@@ -3,40 +3,70 @@ package dev.booki.tts
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import dev.booki.audio.AudioPreview
 import dev.booki.audio.M4aMuxer
 import dev.booki.epub.EpubReader
+import dev.booki.epub.TextSplitter
 import kotlinx.coroutines.*
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Foreground service that converts an EPUB to .m4a in app-private storage.
- * Progress is exposed via [Progress.flow] for the UI.
+ * Foreground service that converts an EPUB to .m4a in app-private storage and,
+ * when [EXTRA_STREAM_LIVE] is true, simultaneously streams the synthesized
+ * audio to the speaker. Declared as [foregroundServiceType=mediaPlayback] so
+ * playback continues with the screen off and the app backgrounded.
+ *
+ * Lifecycle:
+ *   - START / STOP via [Intent] action
+ *   - Stop is wired to the notification's stop action
+ *   - A partial wake lock prevents the CPU from sleeping mid-synth
  */
 class SynthesisService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val stopping = AtomicBoolean(false)
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val uri = intent?.getParcelableExtra<Uri>(EXTRA_URI) ?: run { stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP) {
+            stopping.set(true)
+            scope.cancel()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val uri = intent?.getParcelableExtra<Uri>(EXTRA_URI) ?: run {
+            stopSelf(); return START_NOT_STICKY
+        }
         val voice = intent.getStringExtra(EXTRA_VOICE) ?: "af_sky"
         val speed = intent.getFloatExtra(EXTRA_SPEED, 1f)
+        val streamLive = intent.getBooleanExtra(EXTRA_STREAM_LIVE, false)
         val pickedChapters = intent.getIntArrayExtra(EXTRA_CHAPTERS)?.toSet()
 
-        startForeground(NOTIF_ID, buildNotification("Preparing…"))
+        startForeground(NOTIF_ID, buildNotification("Preparing…", streamLive))
+        acquireWakeLock()
 
         scope.launch {
-            runCatching { synthesize(uri, voice, speed, pickedChapters) }
-                .onFailure { Progress.error(it.message ?: "Synthesis failed") }
+            runCatching { synthesize(uri, voice, speed, streamLive, pickedChapters) }
+                .onFailure {
+                    if (!stopping.get()) Progress.error(it.message ?: "Synthesis failed")
+                }
                 .onSuccess { Progress.done(it) }
+            releaseWakeLock()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
         return START_NOT_STICKY
@@ -46,6 +76,7 @@ class SynthesisService : Service() {
         uri: Uri,
         voice: String,
         speed: Float,
+        streamLive: Boolean,
         pickedChapters: Set<Int>?,
     ): File = withContext(Dispatchers.Default) {
         val book = EpubReader.read(this@SynthesisService, uri)
@@ -57,44 +88,81 @@ class SynthesisService : Service() {
         val outFile = File(outDir, "${book.title.sanitize()}.m4a")
 
         KokoroEngine.load(this@SynthesisService).use { engine ->
-            M4aMuxer(outFile, sampleRate = engine.sampleRate).use { muxer ->
-                var processed = 0
-                for (chapter in chapters) {
-                    Progress.chapter(chapter.title)
-                    for (chunk in chapter.text.splitForTts()) {
-                        ensureActive()
-                        val audio = engine.synthesize(chunk, voice, speed)
-                        muxer.writeSamples(audio)
-                        processed += chunk.length
-                        Progress.tick(processed, totalChars)
-                        updateNotification("${book.title} — ${100 * processed / totalChars}%")
+            val preview = if (streamLive) AudioPreview(engine.sampleRate) else null
+            try {
+                M4aMuxer(outFile, sampleRate = engine.sampleRate).use { muxer ->
+                    var processed = 0
+                    for (chapter in chapters) {
+                        Progress.chapter(chapter.title)
+                        for (chunk in TextSplitter.split(chapter.text)) {
+                            ensureActive()
+                            val audio = engine.synthesize(chunk, voice, speed)
+                            preview?.write(audio)            // blocks until played → natural backpressure
+                            muxer.writeSamples(audio)
+                            processed += chunk.length
+                            Progress.tick(processed, totalChars)
+                            updateNotification(
+                                "${book.title} — ${100 * processed / totalChars}%",
+                                streamLive,
+                            )
+                        }
                     }
                 }
+            } finally {
+                preview?.close()
             }
         }
         outFile
     }
 
-    private fun buildNotification(text: String): Notification {
+    // ---------------------------------------------------------------------
+    // Wake lock — partial lock keeps the CPU running while the screen is off.
+    // mediaPlayback foreground type keeps AudioTrack alive across Doze.
+    // ---------------------------------------------------------------------
+    private fun acquireWakeLock() {
+        if (wakeLock != null) return
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "booki:synth").apply {
+            setReferenceCounted(false)
+            acquire(2 * 60 * 60 * 1000L)  // 2-hour safety cap
+        }
+    }
+    private fun releaseWakeLock() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
+    }
+
+    // ---------------------------------------------------------------------
+    // Notification
+    // ---------------------------------------------------------------------
+    private fun buildNotification(text: String, streamLive: Boolean): Notification {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             mgr.createNotificationChannel(
                 NotificationChannel(CHANNEL, "Audiobook synthesis", NotificationManager.IMPORTANCE_LOW))
         }
+        val stopIntent = PendingIntent.getService(
+            this, 0,
+            Intent(this, SynthesisService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL)
-            .setContentTitle("Booki")
+            .setContentTitle(if (streamLive) "Booki — playing" else "Booki — generating")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop", stopIntent)
             .build()
     }
 
-    private fun updateNotification(text: String) {
+    private fun updateNotification(text: String, streamLive: Boolean) {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        mgr.notify(NOTIF_ID, buildNotification(text))
+        mgr.notify(NOTIF_ID, buildNotification(text, streamLive))
     }
 
     override fun onDestroy() {
+        releaseWakeLock()
         scope.cancel()
         super.onDestroy()
     }
@@ -104,30 +172,12 @@ class SynthesisService : Service() {
         const val EXTRA_VOICE = "voice"
         const val EXTRA_SPEED = "speed"
         const val EXTRA_CHAPTERS = "chapters"
+        const val EXTRA_STREAM_LIVE = "stream_live"
+        const val ACTION_STOP = "dev.booki.action.STOP"
         private const val CHANNEL = "booki.synth"
         private const val NOTIF_ID = 42
     }
 }
 
-private fun String.sanitize(): String = replace(Regex("[^A-Za-z0-9 _.-]"), "_").take(80).ifBlank { "audiobook" }
-
-/** Split into ~500-char chunks at sentence boundaries to keep tensors small. */
-private fun String.splitForTts(maxLen: Int = 500): List<String> {
-    val sentences = split(Regex("(?<=[.!?])\\s+"))
-    val out = ArrayList<String>()
-    val buf = StringBuilder()
-    for (s in sentences) {
-        if (buf.length + s.length > maxLen && buf.isNotEmpty()) {
-            out += buf.toString(); buf.setLength(0)
-        }
-        if (s.length > maxLen) {
-            if (buf.isNotEmpty()) { out += buf.toString(); buf.setLength(0) }
-            s.chunked(maxLen).forEach { out += it }
-        } else {
-            if (buf.isNotEmpty()) buf.append(' ')
-            buf.append(s)
-        }
-    }
-    if (buf.isNotEmpty()) out += buf.toString()
-    return out
-}
+private fun String.sanitize(): String =
+    replace(Regex("[^A-Za-z0-9 _.-]"), "_").take(80).ifBlank { "audiobook" }

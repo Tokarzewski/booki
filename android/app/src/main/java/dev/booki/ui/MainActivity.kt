@@ -14,7 +14,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LibraryBooks
+import androidx.compose.material.icons.automirrored.filled.LibraryBooks
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -62,7 +65,10 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
     var epubLabel by remember { mutableStateOf<String?>(null) }
     var voice by remember { mutableStateOf(Voices.DEFAULT) }
     var speed by remember { mutableFloatStateOf(1f) }
+    var streamLive by remember { mutableStateOf(true) }
     var voiceMenu by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<Library.Book?>(null) }
+    var deleteTarget by remember { mutableStateOf<Library.Book?>(null) }
     val state by Progress.state.collectAsState()
     val library by Library.books.collectAsState()
 
@@ -106,14 +112,34 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
             if (library.isNotEmpty()) {
                 Text("Library", style = MaterialTheme.typography.titleMedium)
                 Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
                         items(library) { book ->
+                            var menuOpen by remember(book.file.path) { mutableStateOf(false) }
                             ListItem(
                                 leadingContent = {
-                                    Icon(Icons.Default.LibraryBooks, contentDescription = null)
+                                    Icon(Icons.AutoMirrored.Filled.LibraryBooks, contentDescription = null)
                                 },
                                 headlineContent = { Text(book.title) },
                                 supportingContent = { Text("${book.sizeKb} KB") },
+                                trailingContent = {
+                                    Box {
+                                        IconButton(onClick = { menuOpen = true }) {
+                                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                                        }
+                                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                            DropdownMenuItem(
+                                                text = { Text("Rename") },
+                                                leadingIcon = { Icon(Icons.Default.Edit, null) },
+                                                onClick = { menuOpen = false; renameTarget = book },
+                                            )
+                                            DropdownMenuItem(
+                                                text = { Text("Delete") },
+                                                leadingIcon = { Icon(Icons.Default.Delete, null) },
+                                                onClick = { menuOpen = false; deleteTarget = book },
+                                            )
+                                        }
+                                    }
+                                },
                                 modifier = Modifier.clickable {
                                     epubUri = Library.uriFor(context, book)
                                     epubLabel = book.title
@@ -150,6 +176,20 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
                 Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.5f..2f)
             }
 
+            Row(
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Switch(checked = streamLive, onCheckedChange = { streamLive = it })
+                Column {
+                    Text("Play while generating", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Streams audio to the speaker as it's synthesized. Continues with screen off.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
             Button(
                 enabled = epubUri != null && state !is SynthState.Running,
                 onClick = {
@@ -158,10 +198,19 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
                         putExtra(SynthesisService.EXTRA_URI, uri)
                         putExtra(SynthesisService.EXTRA_VOICE, voice)
                         putExtra(SynthesisService.EXTRA_SPEED, speed)
+                        putExtra(SynthesisService.EXTRA_STREAM_LIVE, streamLive)
                     }
                     context.startForegroundService(intent)
                 },
-            ) { Text("Generate audiobook") }
+            ) { Text(if (streamLive) "Generate + play" else "Generate audiobook") }
+
+            if (state is SynthState.Running) {
+                OutlinedButton(onClick = {
+                    val intent = Intent(context, SynthesisService::class.java)
+                        .setAction(SynthesisService.ACTION_STOP)
+                    context.startService(intent)
+                }) { Text("Stop") }
+            }
 
             when (val s = state) {
                 SynthState.Idle -> {}
@@ -174,5 +223,44 @@ fun BookiApp(onOpenCatalog: () -> Unit) {
                 is SynthState.Error -> Text("Error: ${s.message}", color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+
+    renameTarget?.let { book ->
+        var newName by remember(book.file.path) { mutableStateOf(book.title) }
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename") },
+            text = {
+                OutlinedTextField(
+                    value = newName, onValueChange = { newName = it },
+                    singleLine = true, modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = newName.isNotBlank() && newName != book.title,
+                    onClick = {
+                        Library.rename(context, book, newName)
+                        renameTarget = null
+                    },
+                ) { Text("Rename") }
+            },
+            dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("Cancel") } },
+        )
+    }
+
+    deleteTarget?.let { book ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete \"${book.title}\"?") },
+            text = { Text("This removes the local EPUB. The synthesized audiobook is not affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    Library.delete(context, book)
+                    deleteTarget = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel") } },
+        )
     }
 }

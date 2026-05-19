@@ -36,6 +36,18 @@ object Library {
         if (book.file.delete()) refresh(context)
     }
 
+    /** Renames the on-disk file. Returns the new [Book] or null if the rename failed. */
+    fun rename(context: Context, book: Book, newTitle: String): Book? {
+        val safe = newTitle.replace(Regex("[^A-Za-z0-9 _.-]"), "_").take(80).trim()
+        if (safe.isBlank()) return null
+        val dest = File(book.file.parentFile, "$safe.epub")
+        if (dest.exists()) return null
+        return if (book.file.renameTo(dest)) {
+            refresh(context)
+            Book(title = safe, author = book.author, file = dest)
+        } else null
+    }
+
     fun uriFor(context: Context, book: Book) =
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", book.file)
 

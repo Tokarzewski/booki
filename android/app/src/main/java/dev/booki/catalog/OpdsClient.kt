@@ -6,7 +6,7 @@ import org.jsoup.Jsoup
 import org.jsoup.parser.Parser
 import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
+import java.net.URLEncoder
 
 /**
  * Minimal OPDS 1.x (Atom) client. Parses navigation + acquisition feeds and
@@ -32,6 +32,8 @@ object OpdsClient {
         val title: String,
         val entries: List<Entry>,
         val nextPage: String?,
+        /** OpenSearch / atom search template with literal `{searchTerms}` placeholder. */
+        val searchTemplate: String?,
     )
 
     suspend fun fetch(url: String): Feed = withContext(Dispatchers.IO) {
@@ -39,11 +41,19 @@ object OpdsClient {
         parse(xml, baseUrl = url)
     }
 
-    private fun parse(xml: String, baseUrl: String): Feed {
+    /** Resolve `{searchTerms}` against [query] and fetch the result. */
+    suspend fun search(feed: Feed, query: String): Feed {
+        val tpl = feed.searchTemplate ?: error("This feed does not advertise a search endpoint")
+        val q = URLEncoder.encode(query, "UTF-8")
+        return fetch(tpl.replace("{searchTerms}", q))
+    }
+
+    private suspend fun parse(xml: String, baseUrl: String): Feed = withContext(Dispatchers.IO) {
         val doc = Jsoup.parse(xml, baseUrl, Parser.xmlParser())
         val title = doc.selectFirst("feed > title")?.text().orEmpty().ifBlank { "Catalog" }
         val nextPage = doc.select("feed > link[rel=next]").firstOrNull()?.absUrl("href")
             ?.takeIf { it.isNotBlank() }
+        val searchTemplate = resolveSearchTemplate(doc)
 
         val entries = doc.select("entry").mapNotNull { e ->
             val entryTitle = e.selectFirst("title")?.text()?.trim().orEmpty()
@@ -56,12 +66,13 @@ object OpdsClient {
             val epub = links.firstOrNull { link ->
                 val rel = link.attr("rel")
                 val type = link.attr("type")
-                (rel.contains("acquisition")) && type.startsWith("application/epub")
+                rel.contains("acquisition") && type.startsWith("application/epub")
             }?.absUrl("href")
 
             val cover = links.firstOrNull { link ->
                 val rel = link.attr("rel")
-                rel.endsWith("/image") || rel.endsWith("/thumbnail") || rel == "http://opds-spec.org/cover"
+                rel.endsWith("/image") || rel.endsWith("/thumbnail") ||
+                    rel == "http://opds-spec.org/cover"
             }?.absUrl("href")
 
             val sub = if (epub == null) {
@@ -83,7 +94,26 @@ object OpdsClient {
             )
         }
 
-        return Feed(title = title, entries = entries, nextPage = nextPage)
+        Feed(title = title, entries = entries, nextPage = nextPage, searchTemplate = searchTemplate)
+    }
+
+    private fun resolveSearchTemplate(doc: org.jsoup.nodes.Document): String? {
+        val direct = doc.select("feed > link[rel=search]").firstOrNull { link ->
+            link.attr("type").contains("application/atom+xml")
+        }?.absUrl("href")
+        if (direct != null && direct.contains("{searchTerms}")) return direct
+
+        val osd = doc.select("feed > link[rel=search]").firstOrNull { link ->
+            link.attr("type").contains("opensearchdescription")
+        }?.absUrl("href") ?: return null
+
+        return runCatching {
+            val osdXml = httpGetText(osd)
+            val osdDoc = Jsoup.parse(osdXml, osd, Parser.xmlParser())
+            osdDoc.select("Url").firstOrNull { it.attr("type").contains("application/atom+xml") }
+                ?.absUrl("template")
+                ?.takeIf { it.contains("{searchTerms}") }
+        }.getOrNull()
     }
 
     private fun httpGetText(url: String): String {
