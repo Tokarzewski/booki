@@ -7,15 +7,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.LibraryBooks
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.booki.data.Library
 import dev.booki.data.Voices
+import dev.booki.tts.ModelDownloader
 import dev.booki.tts.Progress
 import dev.booki.tts.SynthState
 import dev.booki.tts.SynthesisService
@@ -23,37 +30,100 @@ import dev.booki.tts.SynthesisService
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { BookiApp() } }
+        setContent { MaterialTheme { Root() } }
+    }
+}
+
+private enum class Screen { Home, Catalog }
+
+@Composable
+private fun Root() {
+    val context = LocalContextSafe.current
+    var provisioned by remember { mutableStateOf(ModelDownloader.isProvisioned(context)) }
+    var screen by remember { mutableStateOf(Screen.Home) }
+
+    LaunchedEffect(Unit) { Library.refresh(context) }
+
+    if (!provisioned) {
+        SetupScreen(onProvisioned = { provisioned = true })
+    } else when (screen) {
+        Screen.Home -> BookiApp(onOpenCatalog = { screen = Screen.Catalog })
+        Screen.Catalog -> CatalogScreen(onBack = {
+            Library.refresh(context); screen = Screen.Home
+        })
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookiApp() {
+fun BookiApp(onOpenCatalog: () -> Unit) {
     val context = LocalContextSafe.current
     var epubUri by remember { mutableStateOf<Uri?>(null) }
+    var epubLabel by remember { mutableStateOf<String?>(null) }
     var voice by remember { mutableStateOf(Voices.DEFAULT) }
     var speed by remember { mutableFloatStateOf(1f) }
     var voiceMenu by remember { mutableStateOf(false) }
     val state by Progress.state.collectAsState()
+    val library by Library.books.collectAsState()
 
     val pickEpub = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             context.contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             epubUri = uri
+            epubLabel = uri.lastPathSegment
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Booki") }) }) { pad ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Booki") },
+                actions = {
+                    IconButton(onClick = onOpenCatalog) {
+                        Icon(Icons.Default.Public, contentDescription = "Catalog")
+                    }
+                },
+            )
+        },
+    ) { pad ->
         Column(
             modifier = Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Button(onClick = { pickEpub.launch(arrayOf("application/epub+zip")) }) {
-                Text(if (epubUri == null) "Choose EPUB…" else "Change EPUB")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { pickEpub.launch(arrayOf("application/epub+zip")) }) {
+                    Text("Pick EPUB…")
+                }
+                OutlinedButton(onClick = onOpenCatalog) {
+                    Icon(Icons.Default.Public, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Browse catalog")
+                }
             }
-            epubUri?.let { Text("Selected: ${it.lastPathSegment ?: it.toString()}") }
+            epubLabel?.let { Text("Selected: $it") }
+
+            if (library.isNotEmpty()) {
+                Text("Library", style = MaterialTheme.typography.titleMedium)
+                Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                        items(library) { book ->
+                            ListItem(
+                                leadingContent = {
+                                    Icon(Icons.Default.LibraryBooks, contentDescription = null)
+                                },
+                                headlineContent = { Text(book.title) },
+                                supportingContent = { Text("${book.sizeKb} KB") },
+                                modifier = Modifier.clickable {
+                                    epubUri = Library.uriFor(context, book)
+                                    epubLabel = book.title
+                                },
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
 
             ExposedDropdownMenuBox(expanded = voiceMenu, onExpandedChange = { voiceMenu = !voiceMenu }) {
                 OutlinedTextField(
@@ -61,7 +131,9 @@ fun BookiApp() {
                     onValueChange = {},
                     readOnly = true,
                     label = { Text("Voice") },
-                    modifier = Modifier.menuAnchor().fillMaxWidth(),
+                    modifier = Modifier
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                        .fillMaxWidth(),
                 )
                 ExposedDropdownMenu(expanded = voiceMenu, onDismissRequest = { voiceMenu = false }) {
                     Voices.all.forEach { v ->
