@@ -92,12 +92,44 @@ const char*   booki_backend_describe(booki_backend b);
 /* ------------------------------------------------------------------------- */
 
 /* fp16 matmul: C[M,N] = A[M,K] * B[K,N] (row-major, contiguous).
- *
- * A, B, C must all be BOOKI_DTYPE_F16, rank 2. The result is accumulated
- * in fp32 internally and stored as fp16.
- *
  * Returns 0 on success, non-zero on shape mismatch / dtype error. */
 int booki_matmul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* c);
+
+/* Root Mean Square LayerNorm (LLaMA/Kokoro convention):
+ *   y[i] = x[i] * weight[i] / sqrt(mean(x^2) + eps)
+ * Operates on the last axis of [..., D]. */
+int booki_rmsnorm_f16(const booki_tensor* x, const booki_tensor* weight,
+                      float eps, booki_tensor* out);
+
+/* SiLU (a.k.a. swish): y = x * sigmoid(x). Element-wise. */
+int booki_silu_f16(const booki_tensor* x, booki_tensor* out);
+
+/* GELU (tanh approximation, used by Kokoro's FFN). */
+int booki_gelu_f16(const booki_tensor* x, booki_tensor* out);
+
+/* Element-wise binary ops. Same shape, in-place (out = a) allowed. */
+int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
+int booki_mul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
+
+/* Softmax along the last axis with fp32 accumulation + max-shift for
+ * numerical stability. Operates on [..., D]; rows are independent. */
+int booki_softmax_f16(const booki_tensor* x, booki_tensor* out);
+
+/* Embedding lookup: rows = ids.shape, output rows = weight rows.
+ *   out[i, :] = weight[ids[i], :]
+ * ids is int64; weight + out are fp16. */
+int booki_embedding_f16(const booki_tensor* ids, const booki_tensor* weight,
+                        booki_tensor* out);
+
+/* Scaled-dot-product attention. Single head, no mask, no KV cache yet
+ * (those land alongside the graph executor):
+ *
+ *   attn = softmax(Q @ K^T / sqrt(d_k)) @ V
+ *
+ * Q [M, D], K [N, D], V [N, D], out [M, D]. Uses scratch from `arena`. */
+int booki_attention_f16(const booki_tensor* q, const booki_tensor* k,
+                        const booki_tensor* v, booki_arena* arena,
+                        booki_tensor* out);
 
 /* ------------------------------------------------------------------------- */
 /* fp16 conversion helpers — provided for tests and tools that need to

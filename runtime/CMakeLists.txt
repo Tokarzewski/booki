@@ -102,8 +102,10 @@ target_link_libraries(booki_eval PRIVATE booki_runtime m)
 # -----------------------------------------------------------------------------
 add_library(booki_native SHARED
     native/booki_tensor.c
-    native/booki_matmul.c)
+    native/booki_matmul.c
+    native/booki_ops.c)
 target_include_directories(booki_native PUBLIC native)
+target_link_libraries(booki_native PUBLIC m)
 target_compile_options(booki_native PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
@@ -129,3 +131,7 @@ add_test(NAME arena COMMAND test_arena)
 add_executable(test_matmul native/tests/test_matmul.c)
 target_link_libraries(test_matmul PRIVATE booki_native m)
 add_test(NAME matmul COMMAND test_matmul)
+
+add_executable(test_ops native/tests/test_ops.c)
+target_link_libraries(test_ops PRIVATE booki_native m)
+add_test(NAME ops COMMAND test_ops)

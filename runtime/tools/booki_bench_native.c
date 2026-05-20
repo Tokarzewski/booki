@@ -31,6 +31,58 @@ static const matmul_case CASES[] = {
     { "matmul_f16_1024x1024x1024",1024,1024, 1024 },
 };
 
+static void bench_unary(const char* name, booki_arena* arena,
+                        int (*fn)(const booki_tensor*, booki_tensor*),
+                        int64_t rows, int64_t cols, int iters,
+                        int json, int* first) {
+    int64_t s[2] = { rows, cols };
+    booki_tensor x = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+    booki_tensor y = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+    int64_t n = rows * cols;
+    for (int64_t i = 0; i < n; ++i) ((uint16_t*)x.data)[i] = (uint16_t)((i * 17) & 0x3fff);
+    fn(&x, &y);  /* warmup */
+    double t0 = now_ms();
+    for (int i = 0; i < iters; ++i) fn(&x, &y);
+    double dt = (now_ms() - t0) / iters;
+    double tokens_per_sec = 1000.0 / dt;
+    if (json) {
+        printf("%s    { \"name\": \"%s\", \"ms_per_token\": %.4f, "
+               "\"tokens_per_sec\": %.2f }",
+               *first ? "" : ",\n", name, dt, tokens_per_sec);
+        *first = 0;
+    } else {
+        printf("%-30s  %.4f ms   %.2f ops/s\n", name, dt, tokens_per_sec);
+    }
+}
+
+static void bench_binary(const char* name, booki_arena* arena,
+                         int (*fn)(const booki_tensor*, const booki_tensor*, booki_tensor*),
+                         int64_t rows, int64_t cols, int iters,
+                         int json, int* first) {
+    int64_t s[2] = { rows, cols };
+    booki_tensor a = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+    booki_tensor b = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+    booki_tensor c = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+    int64_t n = rows * cols;
+    for (int64_t i = 0; i < n; ++i) {
+        ((uint16_t*)a.data)[i] = (uint16_t)((i * 13) & 0x3fff);
+        ((uint16_t*)b.data)[i] = (uint16_t)((i * 19) & 0x3fff);
+    }
+    fn(&a, &b, &c);
+    double t0 = now_ms();
+    for (int i = 0; i < iters; ++i) fn(&a, &b, &c);
+    double dt = (now_ms() - t0) / iters;
+    double tokens_per_sec = 1000.0 / dt;
+    if (json) {
+        printf("%s    { \"name\": \"%s\", \"ms_per_token\": %.4f, "
+               "\"tokens_per_sec\": %.2f }",
+               *first ? "" : ",\n", name, dt, tokens_per_sec);
+        *first = 0;
+    } else {
+        printf("%-30s  %.4f ms   %.2f ops/s\n", name, dt, tokens_per_sec);
+    }
+}
+
 int main(int argc, char** argv) {
     int iters = 3;
     int emit_json = 0;
@@ -55,6 +107,7 @@ int main(int argc, char** argv) {
     }
 
     int n_cases = (int)(sizeof(CASES) / sizeof(CASES[0]));
+    int first = 1;
     for (int i = 0; i < n_cases; ++i) {
         const matmul_case* c = &CASES[i];
         booki_arena_reset(arena);
@@ -84,17 +137,49 @@ int main(int argc, char** argv) {
         double tokens_per_sec = 1000.0 / dt;
 
         if (emit_json) {
-            printf("    { \"name\": \"%s\", \"ms_per_token\": %.4f, "
-                   "\"tokens_per_sec\": %.2f, \"gflops\": %.2f }%s\n",
-                   c->name, ms_per_token, tokens_per_sec, gflops,
-                   i + 1 < n_cases ? "," : "");
+            printf("%s    { \"name\": \"%s\", \"ms_per_token\": %.4f, "
+                   "\"tokens_per_sec\": %.2f, \"gflops\": %.2f }",
+                   first ? "" : ",\n", c->name, ms_per_token, tokens_per_sec, gflops);
+            first = 0;
         } else {
             printf("%-30s  %.3f ms   %.2f GFLOPS\n", c->name, dt, gflops);
         }
     }
 
+    /* Element-wise / activation / norm ops at Kokoro-scale tensors. */
+    booki_arena_reset(arena);
+    bench_unary  ("silu_f16_512x1024",  arena, booki_silu_f16,  512, 1024, iters, emit_json, &first);
+    bench_unary  ("gelu_f16_512x1024",  arena, booki_gelu_f16,  512, 1024, iters, emit_json, &first);
+    bench_binary ("add_f16_512x1024",   arena, booki_add_f16,   512, 1024, iters, emit_json, &first);
+    bench_binary ("mul_f16_512x1024",   arena, booki_mul_f16,   512, 1024, iters, emit_json, &first);
+    bench_unary  ("softmax_f16_64x4096",arena, booki_softmax_f16, 64, 4096, iters, emit_json, &first);
+
+    /* RMSNorm needs a weight tensor so it doesn't fit bench_unary. */
+    {
+        booki_arena_reset(arena);
+        int64_t s[2] = { 512, 1024 };
+        int64_t ws[1] = { 1024 };
+        booki_tensor x = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+        booki_tensor w = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 1, ws);
+        booki_tensor y = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s);
+        for (int64_t i = 0; i < 512 * 1024; ++i) ((uint16_t*)x.data)[i] = (uint16_t)((i * 11) & 0x3fff);
+        for (int64_t i = 0; i < 1024; ++i) ((uint16_t*)w.data)[i] = (uint16_t)((i * 7) & 0x3fff);
+        booki_rmsnorm_f16(&x, &w, 1e-6f, &y);
+        double t0 = now_ms();
+        for (int i = 0; i < iters; ++i) booki_rmsnorm_f16(&x, &w, 1e-6f, &y);
+        double dt = (now_ms() - t0) / iters;
+        if (emit_json) {
+            printf("%s    { \"name\": \"rmsnorm_f16_512x1024\", \"ms_per_token\": %.4f, "
+                   "\"tokens_per_sec\": %.2f }",
+                   first ? "" : ",\n", dt, 1000.0 / dt);
+            first = 0;
+        } else {
+            printf("%-30s  %.4f ms\n", "rmsnorm_f16_512x1024", dt);
+        }
+    }
+
     if (emit_json) {
-        printf("  ]\n}\n");
+        printf("\n  ]\n}\n");
     }
 
     booki_arena_destroy(arena);
