@@ -384,6 +384,149 @@ int booki_cos_f16(const booki_tensor* x, booki_tensor* out) {
     return 0;
 }
 
+int booki_exp_f16(const booki_tensor* x, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; ++i)
+        op[i] = booki_f32_to_f16(expf(booki_f16_to_f32(xp[i])));
+    return 0;
+}
+
+/* atan(x) via the classic atan(x) = pi/2 - atan(1/x) reduction for |x|>1,
+ * then a degree-9 odd polynomial on [-1, 1]. Accuracy < 5e-4 there. */
+static inline float atan_scalar(float x) {
+    int sign_flip = 0, recip = 0;
+    if (x < 0)        { x = -x; sign_flip = 1; }
+    if (x > 1.0f)     { x = 1.0f / x; recip = 1; }
+    float x2 = x * x;
+    /* Horner from Hastings approximation. */
+    float a =  0.0028662257f;
+    a = a * x2 + -0.0161657367f;
+    a = a * x2 +  0.0429096138f;
+    a = a * x2 + -0.0752896400f;
+    a = a * x2 +  0.1065626393f;
+    a = a * x2 + -0.1420889944f;
+    a = a * x2 +  0.1999355085f;
+    a = a * x2 + -0.3333314528f;
+    a = a * x2 + 1.0f;
+    float r = x * a;
+    if (recip) r = 1.5707963267948966f - r;
+    if (sign_flip) r = -r;
+    return r;
+}
+
+int booki_atan_f16(const booki_tensor* x, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; ++i)
+        op[i] = booki_f32_to_f16(atan_scalar(booki_f16_to_f32(xp[i])));
+    return 0;
+}
+
+/* Cumulative sum along the last axis. */
+int booki_cumsum_f16(const booki_tensor* x, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    int64_t T = x->shape[x->rank - 1];
+    int64_t R = rows_of(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    for (int64_t r = 0; r < R; ++r) {
+        float acc = 0.0f;
+        for (int64_t t = 0; t < T; ++t) {
+            acc += booki_f16_to_f32(xp[r * T + t]);
+            op[r * T + t] = booki_f32_to_f16(acc);
+        }
+    }
+    return 0;
+}
+
+/* Constant-value 1-D pad along the last axis. */
+int booki_pad1d_f16(const booki_tensor* x, int64_t before, int64_t after,
+                    float value, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (x->rank != out->rank) return -3;
+    int64_t Tin  = x->shape[x->rank - 1];
+    int64_t Tout = out->shape[out->rank - 1];
+    if (Tout != Tin + before + after) return -4;
+    for (int i = 0; i < x->rank - 1; ++i)
+        if (x->shape[i] != out->shape[i]) return -5;
+
+    int64_t R = rows_of(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    uint16_t pad_h = booki_f32_to_f16(value);
+
+    for (int64_t r = 0; r < R; ++r) {
+        uint16_t* o = op + r * Tout;
+        for (int64_t i = 0; i < before; ++i) o[i] = pad_h;
+        for (int64_t t = 0; t < Tin; ++t)    o[before + t] = xp[r * Tin + t];
+        for (int64_t i = 0; i < after; ++i)  o[before + Tin + i] = pad_h;
+    }
+    return 0;
+}
+
+/* ScatterND (subset that covers Kokoro's vocoder usage).
+ *
+ * data    : any shape
+ * indices : [N, K]    where K <= data.rank
+ * updates : [N, data.shape[K:]]   (or scalar if K == data.rank)
+ * out     : same shape + dtype as data; data is copied then patched in place.
+ */
+int booki_scatter_nd_f16(const booki_tensor* data, const booki_tensor* indices,
+                        const booki_tensor* updates, booki_tensor* out) {
+    if (!data || !indices || !updates || !out) return -1;
+    if (data->dtype != BOOKI_DTYPE_F16 || updates->dtype != BOOKI_DTYPE_F16 ||
+        out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (indices->dtype != BOOKI_DTYPE_I64) return -3;
+    if (!same_shape(data, out)) return -4;
+    if (indices->rank < 1) return -5;
+
+    int64_t N = indices->shape[0];
+    int64_t K = indices->rank >= 2 ? indices->shape[indices->rank - 1] : 1;
+    if (K > data->rank) return -6;
+
+    /* slice_size = product of data.shape[K:] (elements per update). */
+    int64_t slice_size = 1;
+    for (int i = (int)K; i < data->rank; ++i) slice_size *= data->shape[i];
+
+    /* Total update elements expected = N * slice_size. */
+    if (booki_tensor_elements(updates) != N * slice_size) return -7;
+
+    memcpy(out->data, data->data, data->nbytes);
+
+    const int64_t* idxp = (const int64_t*)indices->data;
+    const uint16_t* up   = (const uint16_t*)updates->data;
+    uint16_t*       op   = (uint16_t*)out->data;
+
+    for (int64_t n = 0; n < N; ++n) {
+        int64_t flat = 0;
+        int64_t stride = 1;
+        /* Build flat offset in row-major order from index components. */
+        for (int i = (int)K - 1; i >= 0; --i) {
+            int64_t idx = idxp[n * K + i];
+            int64_t dim = data->shape[i];
+            if (idx < 0 || idx >= dim) return -8;
+            flat += idx * stride;
+            stride *= dim;
+        }
+        memcpy(op + flat * slice_size,
+               up  + n    * slice_size,
+               slice_size * sizeof(uint16_t));
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* InstanceNormalization                                                     */
 /*                                                                           */

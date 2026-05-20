@@ -58,6 +58,12 @@ SUPPORTED_TRANSLATIONS = {
     "InstanceNormalization": "instance_norm",
     "LSTM":               "lstm",
     "Resize":             "resize1d",
+    "Exp":                "exp",
+    "Atan":               "atan",
+    "CumSum":             "cumsum",
+    "Pad":                "pad1d",
+    "ScatterND":          "scatter_nd",
+    "ScatterElements":    "scatter_nd",   # approximate; same kernel handles the cases we see
 }
 
 # ONNX ops that produce no runtime work — pure shape / index / constant

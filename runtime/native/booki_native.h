@@ -114,9 +114,26 @@ int booki_gelu_f16(const booki_tensor* x, booki_tensor* out);
 /* LeakyReLU: y = x if x > 0 else alpha * x.  Element-wise. */
 int booki_leaky_relu_f16(const booki_tensor* x, float alpha, booki_tensor* out);
 
-/* sin / cos / tanh — element-wise transcendentals. NEON-vectorised. */
+/* sin / cos / exp / atan — element-wise transcendentals. */
 int booki_sin_f16(const booki_tensor* x, booki_tensor* out);
 int booki_cos_f16(const booki_tensor* x, booki_tensor* out);
+int booki_exp_f16(const booki_tensor* x, booki_tensor* out);
+int booki_atan_f16(const booki_tensor* x, booki_tensor* out);
+
+/* Cumulative sum along the last axis. */
+int booki_cumsum_f16(const booki_tensor* x, booki_tensor* out);
+
+/* Constant-value pad along the last axis. Adds [before, after] zero-or-
+ * constant cells. Out shape is x.shape with last_axis += before + after. */
+int booki_pad1d_f16(const booki_tensor* x, int64_t before, int64_t after,
+                    float value, booki_tensor* out);
+
+/* ScatterND (subset matching Kokoro's usage): updates a copy of [data]
+ * at the index positions given by [indices], replacing slices with
+ * [updates]. indices has shape [N, K], updates has shape [N, ...]
+ * matching data.shape[K:]. */
+int booki_scatter_nd_f16(const booki_tensor* data, const booki_tensor* indices,
+                        const booki_tensor* updates, booki_tensor* out);
 
 /* Element-wise binary ops. Same shape, in-place (out = a) allowed. */
 int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);

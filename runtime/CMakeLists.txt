@@ -193,6 +193,10 @@ add_executable(test_ops_extra native/tests/test_ops_extra.c)
 target_link_libraries(test_ops_extra PRIVATE booki_native m)
 add_test(NAME ops_extra COMMAND test_ops_extra)
 
+add_executable(test_ops_more native/tests/test_ops_more.c)
+target_link_libraries(test_ops_more PRIVATE booki_native m)
+add_test(NAME ops_more COMMAND test_ops_more)
+
 add_executable(test_conv_transpose1d native/tests/test_conv_transpose1d.c)
 target_link_libraries(test_conv_transpose1d PRIVATE booki_native m)
 add_test(NAME conv_transpose1d COMMAND test_conv_transpose1d)
