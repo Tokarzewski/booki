@@ -24,10 +24,14 @@ val downloadSherpaOnnx by tasks.registering {
     }
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    dependsOn(downloadSherpaOnnx)
+androidComponents.onVariants { variant ->
+    afterEvaluate {
+        tasks.matching { it.name.startsWith("pre") && it.name.endsWith("Build") }
+            .configureEach { dependsOn(downloadSherpaOnnx) }
+        tasks.matching { it.name == "collect${variant.name.replaceFirstChar { it.uppercase() }}Dependencies" }
+            .configureEach { dependsOn(downloadSherpaOnnx) }
+    }
 }
-tasks.withType<JavaCompile>().configureEach { dependsOn(downloadSherpaOnnx) }
 
 android {
     namespace = "dev.booki"
@@ -39,9 +43,10 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "0.3.0"
-        // Sherpa-onnx ships native libs for 4 ABIs; only arm64-v8a + armeabi-v7a
-        // are realistic for the modern phones Obtainium users install on.
-        ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a") }
+        // Modern phones are arm64-v8a; dropping armeabi-v7a saves ~22 MB.
+        ndk { abiFilters += setOf("arm64-v8a") }
+        // Only ship English resources (Compose/AndroidX bundle ~70 locales).
+        resourceConfigurations += setOf("en")
     }
 
     signingConfigs {
@@ -62,7 +67,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             val ks = System.getenv("KEYSTORE_FILE") ?: project.findProperty("KEYSTORE_FILE") as String?
             signingConfig = if (!ks.isNullOrBlank()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         }
@@ -100,10 +107,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.documentfile:documentfile:1.0.1")
 
-    // EPUB parsing (epub4j is the maintained fork of epublib on Maven Central)
+    // EPUB parsing (epub4j is the maintained fork of epublib on Maven Central).
+    // Excludes: org.slf4j (no logger needed); xmlpull + net.sf.kxml (collide
+    // with the XmlPullParser interface that Android already ships).
     implementation("io.documentnode:epub4j-core:4.2.2") {
         exclude(group = "org.slf4j")
         exclude(group = "xmlpull")
+        exclude(group = "net.sf.kxml")
     }
     implementation("org.jsoup:jsoup:1.18.1")
 
