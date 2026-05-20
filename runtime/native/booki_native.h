@@ -151,6 +151,33 @@ int booki_and_i8(const booki_tensor* a, const booki_tensor* b, booki_tensor* out
 int booki_random_uniform_f16(booki_tensor* out, float low, float high, uint64_t seed);
 int booki_random_normal_f16 (booki_tensor* out, float mean, float stddev, uint64_t seed);
 
+/* ------------------------------------------------------------------------- */
+/* Sequence type — variable-length list of tensors, used by ONNX's sequence
+ * ops (SequenceEmpty / SequenceAt / SequenceInsert / SplitToSequence /
+ * ConcatFromSequence) and by the Loop op as accumulator state. The
+ * sequence holds owning references to tensor metadata; the underlying
+ * tensor data lives in the runtime arena and remains valid for the life
+ * of the surrounding booki_graph_run call.
+ * ------------------------------------------------------------------------- */
+
+typedef struct booki_sequence booki_sequence;
+
+booki_sequence* booki_sequence_new(booki_arena* arena);
+int             booki_sequence_len(const booki_sequence* s);
+int             booki_sequence_push(booki_sequence* s, const booki_tensor* t);
+int             booki_sequence_at(const booki_sequence* s, int idx, booki_tensor* out);
+
+/* Split [x] along [axis] into equal-sized chunks of size [chunk]
+ * (number of chunks = x.shape[axis] / chunk). The result is appended
+ * to [out_seq]. */
+int booki_split_to_sequence_f16(const booki_tensor* x, int axis, int64_t chunk,
+                                booki_sequence* out_seq, booki_arena* arena);
+
+/* Concatenate the tensors in [seq] along [axis] into a single tensor
+ * [out]. All tensors in the sequence must agree on all dims except [axis]. */
+int booki_concat_from_sequence_f16(const booki_sequence* seq, int axis,
+                                   booki_arena* arena, booki_tensor* out);
+
 /* Element-wise binary ops. Same shape, in-place (out = a) allowed. */
 int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
 int booki_sub_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
