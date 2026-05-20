@@ -131,6 +131,20 @@ int booki_attention_f16(const booki_tensor* q, const booki_tensor* k,
                         const booki_tensor* v, booki_arena* arena,
                         booki_tensor* out);
 
+/* Multi-head SDPA. Q/K/V are packed [M, H*D_h] / [N, H*D_h] / [N, H*D_h],
+ * out is [M, H*D_h]. Internally reshapes to H independent heads and runs
+ * booki_attention_f16 on each. Mask + KV cache come with the executor. */
+int booki_multihead_attention_f16(const booki_tensor* q, const booki_tensor* k,
+                                  const booki_tensor* v, int num_heads,
+                                  booki_arena* arena, booki_tensor* out);
+
+/* 1-D convolution (PyTorch / ONNX layout). See booki_conv1d.c for the full
+ * contract. stride, padding, dilation, groups follow PyTorch semantics. */
+int booki_conv1d_f16(const booki_tensor* x, const booki_tensor* weight,
+                     const booki_tensor* bias,
+                     int64_t stride, int64_t padding, int64_t dilation, int64_t groups,
+                     booki_tensor* out);
+
 /* ------------------------------------------------------------------------- */
 /* fp16 conversion helpers — provided for tests and tools that need to
  * cross the boundary without hard-coding ARM intrinsics. */

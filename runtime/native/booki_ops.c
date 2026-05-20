@@ -136,38 +136,112 @@ int booki_rmsnorm_f16(const booki_tensor* x, const booki_tensor* w,
 /* SiLU + GELU                                                               */
 /* ------------------------------------------------------------------------- */
 
-static inline float silu_f32(float x) {
-    /* x * sigmoid(x) = x / (1 + exp(-x)) */
-    return x / (1.0f + expf(-x));
-}
-
+static inline float silu_f32(float x) { return x / (1.0f + expf(-x)); }
 static inline float gelu_tanh_f32(float x) {
-    /* GELU (tanh approximation) used by Kokoro:
-     *   0.5 * x * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3) )) */
-    const float k = 0.7978845608028654f;        /* sqrt(2/pi) */
+    const float k = 0.7978845608028654f;
     float inner = k * (x + 0.044715f * x * x * x);
     return 0.5f * x * (1.0f + tanhf(inner));
 }
 
-static int unary_apply(const booki_tensor* x, booki_tensor* out,
-                       float (*fn)(float)) {
+#if HAVE_NEON
+/* Fast vectorised expf approximation (range-reduced, polynomial degree-5).
+ * Accurate to <2e-3 over the range silu/gelu hit in practice (-20..20).
+ * Saturates for very negative inputs to keep the inner sigmoid stable. */
+static inline float32x4_t exp_ps_neon(float32x4_t x) {
+    const float32x4_t log2e   = vdupq_n_f32(1.4426950408889634f);
+    const float32x4_t ln2_hi  = vdupq_n_f32(0.6931471805599453f);
+    const float32x4_t one     = vdupq_n_f32(1.0f);
+
+    /* Clamp to avoid overflow / denorm pile-up. */
+    x = vminq_f32(x, vdupq_n_f32(88.0f));
+    x = vmaxq_f32(x, vdupq_n_f32(-88.0f));
+
+    /* n = round(x * log2(e)); f = x - n*ln(2). */
+    float32x4_t y = vmulq_f32(x, log2e);
+    int32x4_t   n = vcvtnq_s32_f32(y);
+    float32x4_t fn = vcvtq_f32_s32(n);
+    float32x4_t f = vsubq_f32(x, vmulq_f32(fn, ln2_hi));
+
+    /* exp(f) ≈ 1 + f + f^2/2 + f^3/6 + f^4/24 + f^5/120 (Horner) */
+    float32x4_t p = vdupq_n_f32(1.0f / 120.0f);
+    p = vfmaq_f32(vdupq_n_f32(1.0f / 24.0f),  p, f);
+    p = vfmaq_f32(vdupq_n_f32(1.0f / 6.0f),   p, f);
+    p = vfmaq_f32(vdupq_n_f32(1.0f / 2.0f),   p, f);
+    p = vfmaq_f32(vdupq_n_f32(1.0f),          p, f);
+    p = vfmaq_f32(one,                        p, f);
+
+    /* Apply 2^n via bit-reinterpret. */
+    int32x4_t expo = vshlq_n_s32(vaddq_s32(n, vdupq_n_s32(127)), 23);
+    return vmulq_f32(p, vreinterpretq_f32_s32(expo));
+}
+
+static inline float32x4_t silu_ps_neon(float32x4_t x) {
+    /* x * sigmoid(x) = x / (1 + exp(-x)) */
+    float32x4_t e = exp_ps_neon(vnegq_f32(x));
+    float32x4_t denom = vaddq_f32(vdupq_n_f32(1.0f), e);
+    return vdivq_f32(x, denom);
+}
+
+/* tanh(x) = 1 - 2/(exp(2x) + 1) */
+static inline float32x4_t tanh_ps_neon(float32x4_t x) {
+    float32x4_t e2x = exp_ps_neon(vmulq_f32(x, vdupq_n_f32(2.0f)));
+    float32x4_t denom = vaddq_f32(e2x, vdupq_n_f32(1.0f));
+    return vsubq_f32(vdupq_n_f32(1.0f), vdivq_f32(vdupq_n_f32(2.0f), denom));
+}
+
+static inline float32x4_t gelu_ps_neon(float32x4_t x) {
+    const float32x4_t k       = vdupq_n_f32(0.7978845608028654f);
+    const float32x4_t c       = vdupq_n_f32(0.044715f);
+    const float32x4_t half    = vdupq_n_f32(0.5f);
+    const float32x4_t one     = vdupq_n_f32(1.0f);
+    float32x4_t x3    = vmulq_f32(x, vmulq_f32(x, x));
+    float32x4_t inner = vmulq_f32(k, vaddq_f32(x, vmulq_f32(c, x3)));
+    return vmulq_f32(half, vmulq_f32(x, vaddq_f32(one, tanh_ps_neon(inner))));
+}
+#endif
+
+int booki_silu_f16(const booki_tensor* x, booki_tensor* out) {
     if (!x || !out) return -1;
     if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
     if (!same_shape(x, out)) return -3;
+
     int64_t n = booki_tensor_elements(x);
     const uint16_t* xp = (const uint16_t*)x->data;
     uint16_t*       op = (uint16_t*)out->data;
-    for (int64_t i = 0; i < n; ++i) {
-        op[i] = booki_f32_to_f16(fn(booki_f16_to_f32(xp[i])));
+    int64_t i = 0;
+#if HAVE_NEON
+    for (; i + 7 < n; i += 8) {
+        float16x8_t h = vld1q_f16((const __fp16*)&xp[i]);
+        float32x4_t lo = silu_ps_neon(vcvt_f32_f16(vget_low_f16(h)));
+        float32x4_t hi = silu_ps_neon(vcvt_f32_f16(vget_high_f16(h)));
+        vst1_f16((__fp16*)&op[i],     vcvt_f16_f32(lo));
+        vst1_f16((__fp16*)&op[i + 4], vcvt_f16_f32(hi));
     }
+#endif
+    for (; i < n; ++i) op[i] = booki_f32_to_f16(silu_f32(booki_f16_to_f32(xp[i])));
     return 0;
 }
 
-int booki_silu_f16(const booki_tensor* x, booki_tensor* out) {
-    return unary_apply(x, out, silu_f32);
-}
 int booki_gelu_f16(const booki_tensor* x, booki_tensor* out) {
-    return unary_apply(x, out, gelu_tanh_f32);
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    int64_t i = 0;
+#if HAVE_NEON
+    for (; i + 7 < n; i += 8) {
+        float16x8_t h = vld1q_f16((const __fp16*)&xp[i]);
+        float32x4_t lo = gelu_ps_neon(vcvt_f32_f16(vget_low_f16(h)));
+        float32x4_t hi = gelu_ps_neon(vcvt_f32_f16(vget_high_f16(h)));
+        vst1_f16((__fp16*)&op[i],     vcvt_f16_f32(lo));
+        vst1_f16((__fp16*)&op[i + 4], vcvt_f16_f32(hi));
+    }
+#endif
+    for (; i < n; ++i) op[i] = booki_f32_to_f16(gelu_tanh_f32(booki_f16_to_f32(xp[i])));
+    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -327,4 +401,71 @@ int booki_attention_f16(const booki_tensor* q, const booki_tensor* k,
     /* out = scores @ V */
     rc = booki_matmul_f16(&S, v, out);
     return rc;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Multi-head attention                                                      */
+/*                                                                           */
+/* Q [M, H*D], K [N, H*D], V [N, H*D]  →  out [M, H*D]                       */
+/*                                                                           */
+/* Splits the embedding dimension into H heads, runs single-head attention   */
+/* on each independently, concatenates the results. KV cache + causal mask  */
+/* arrive with the graph executor.                                           */
+/* ------------------------------------------------------------------------- */
+
+int booki_multihead_attention_f16(const booki_tensor* q, const booki_tensor* k,
+                                  const booki_tensor* v, int num_heads,
+                                  booki_arena* arena, booki_tensor* out) {
+    if (!q || !k || !v || !arena || !out) return -1;
+    if (q->dtype != BOOKI_DTYPE_F16 || k->dtype != BOOKI_DTYPE_F16 ||
+        v->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (q->rank != 2 || k->rank != 2 || v->rank != 2 || out->rank != 2) return -3;
+    if (num_heads <= 0) return -4;
+
+    int64_t M = q->shape[0], E = q->shape[1];
+    int64_t N = k->shape[0];
+    if (k->shape[1] != E || v->shape[0] != N || v->shape[1] != E) return -5;
+    if (out->shape[0] != M || out->shape[1] != E) return -6;
+    if (E % num_heads != 0) return -7;
+    int64_t D = E / num_heads;
+
+    /* Per-head slabs. Each head reads a contiguous D-element column of the
+     * input rows and writes a contiguous D-element column of the output.
+     * We materialise each head's Q/K/V as a fresh contiguous tensor in the
+     * arena so booki_attention_f16 (which assumes contiguous rows) just
+     * works. Avoids implementing strided matmul.  */
+    int64_t s_q[2] = { M, D };
+    int64_t s_kv[2]= { N, D };
+
+    for (int h = 0; h < num_heads; ++h) {
+        booki_tensor Qh = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s_q);
+        booki_tensor Kh = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s_kv);
+        booki_tensor Vh = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s_kv);
+        booki_tensor Yh = booki_tensor_arena(arena, BOOKI_DTYPE_F16, 2, s_q);
+        if (!Qh.data || !Kh.data || !Vh.data || !Yh.data) return -8;
+
+        const uint16_t* qp = (const uint16_t*)q->data;
+        const uint16_t* kp = (const uint16_t*)k->data;
+        const uint16_t* vp = (const uint16_t*)v->data;
+        uint16_t* qhp = (uint16_t*)Qh.data;
+        uint16_t* khp = (uint16_t*)Kh.data;
+        uint16_t* vhp = (uint16_t*)Vh.data;
+
+        int64_t off = (int64_t)h * D;
+        for (int64_t m = 0; m < M; ++m)
+            memcpy(qhp + m * D, qp + m * E + off, D * sizeof(uint16_t));
+        for (int64_t n = 0; n < N; ++n) {
+            memcpy(khp + n * D, kp + n * E + off, D * sizeof(uint16_t));
+            memcpy(vhp + n * D, vp + n * E + off, D * sizeof(uint16_t));
+        }
+
+        int rc = booki_attention_f16(&Qh, &Kh, &Vh, arena, &Yh);
+        if (rc) return rc;
+
+        uint16_t* op  = (uint16_t*)out->data;
+        uint16_t* yhp = (uint16_t*)Yh.data;
+        for (int64_t m = 0; m < M; ++m)
+            memcpy(op + m * E + off, yhp + m * D, D * sizeof(uint16_t));
+    }
+    return 0;
 }

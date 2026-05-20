@@ -131,6 +131,13 @@ jobs:
           ./build/booki_bench_native --iters 5 --json > build/bench-native.json
           jq '.' build/bench-native.json
 
+      - name: Transformer-block bench (native runtime, composed)
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
+        run: |
+          ./build/booki_bench_block --iters 3 --json > build/bench-block.json
+          jq '.' build/bench-block.json
+
       - name: Upload bench JSON
         uses: actions/upload-artifact@v4
         with:
@@ -138,6 +145,7 @@ jobs:
           path: |
             runtime/build/bench.json
             runtime/build/bench-native.json
+            runtime/build/bench-block.json
 
       - name: Regression gate (vs baseline on main)
         if: github.event_name == 'pull_request'
