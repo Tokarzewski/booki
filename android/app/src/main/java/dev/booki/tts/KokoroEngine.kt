@@ -60,7 +60,7 @@ class KokoroEngine private constructor(
         fun load(context: Context): KokoroEngine {
             val modelFile = File(context.filesDir, "kokoro/kokoro-v1.0.onnx")
             check(modelFile.exists()) {
-                "Kokoro model missing. Place kokoro-v1.0.onnx + voices.bin under app files/kokoro/."
+                "Kokoro model missing. Re-run first-launch setup to download it."
             }
             val env = OrtEnvironment.getEnvironment()
             val opts = OrtSession.SessionOptions().apply {
