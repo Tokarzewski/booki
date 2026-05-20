@@ -1,76 +1,66 @@
 package dev.booki.tts
 
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
 import android.content.Context
+import com.k2fsa.sherpa.onnx.OfflineTts
+import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
+import dev.booki.data.Voices
 import java.io.File
-import java.nio.FloatBuffer
-import java.nio.LongBuffer
 
 /**
- * Wraps the Kokoro-82M ONNX model. The model and tokenizer/voice embeddings must be
- * provisioned by the user — see assets/README.md.
+ * Thin wrapper around sherpa-onnx's [OfflineTts] configured for Kokoro.
  *
- * Expected model inputs (kokoro-onnx convention):
- *   tokens : int64[1, T]      phoneme/token ids
- *   style  : float32[1, 256]  speaker style embedding (per voice)
- *   speed  : float32[1]       1.0 = normal
- * Output:
- *   audio  : float32[N]       waveform @ 24 kHz
+ * Sherpa-onnx already handles phonemization via the bundled espeak-ng (and the
+ * Chinese/Japanese G2P lexicons) — so we just pass raw text in and get audio
+ * out. The Kokoro bundle layout under `filesDir/kokoro/` is:
+ *
+ *   model.onnx
+ *   voices.bin
+ *   tokens.txt
+ *   lexicon-us-en.txt, lexicon-zh.txt, lexicon-ja.txt, ...
+ *   espeak-ng-data/
  */
-class KokoroEngine private constructor(
-    private val env: OrtEnvironment,
-    private val session: OrtSession,
-    private val tokenizer: KokoroTokenizer,
-    private val voices: VoiceStore,
-) : AutoCloseable {
+class KokoroEngine private constructor(private val tts: OfflineTts) : AutoCloseable {
 
-    val sampleRate: Int = 24_000
+    val sampleRate: Int = tts.sampleRate()
 
     fun synthesize(text: String, voiceId: String, speed: Float = 1f): FloatArray {
-        val tokens = tokenizer.tokenize(text)
-        val style = voices.styleFor(voiceId, tokens.size)
-
-        val tokensTensor = OnnxTensor.createTensor(
-            env, LongBuffer.wrap(tokens), longArrayOf(1, tokens.size.toLong()))
-        val styleTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(style), longArrayOf(1, style.size.toLong()))
-        val speedTensor = OnnxTensor.createTensor(
-            env, FloatBuffer.wrap(floatArrayOf(speed)), longArrayOf(1))
-
-        return tokensTensor.use { tt ->
-            styleTensor.use { st ->
-                speedTensor.use { sp ->
-                    session.run(mapOf("tokens" to tt, "style" to st, "speed" to sp)).use { out ->
-                        @Suppress("UNCHECKED_CAST")
-                        (out[0].value as FloatArray)
-                    }
-                }
-            }
-        }
+        val sid = Voices.sidOf(voiceId)
+        return tts.generate(text = text, sid = sid, speed = speed).samples
     }
 
     override fun close() {
-        session.close()
-        env.close()
+        tts.release()
     }
 
     companion object {
         fun load(context: Context): KokoroEngine {
-            val modelFile = File(context.filesDir, "kokoro/kokoro-v1.0.onnx")
-            check(modelFile.exists()) {
-                "Kokoro model missing. Re-run first-launch setup to download it."
+            val dir = File(context.filesDir, "kokoro")
+            check(File(dir, "model.onnx").exists()) {
+                "Kokoro bundle missing under $dir. Re-run first-launch setup."
             }
-            val env = OrtEnvironment.getEnvironment()
-            val opts = OrtSession.SessionOptions().apply {
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.BASIC_OPT)
-                setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceAtMost(4))
+
+            val lexicons = listOf(
+                "lexicon-us-en.txt", "lexicon-en-us.txt", "lexicon-gb-en.txt",
+                "lexicon-zh.txt", "lexicon-ja.txt",
+            ).map { File(dir, it) }.filter { it.exists() }.joinToString(",") { it.absolutePath }
+
+            val cfg = OfflineTtsConfig().apply {
+                model = OfflineTtsModelConfig().apply {
+                    kokoro = OfflineTtsKokoroModelConfig(
+                        model = File(dir, "model.onnx").absolutePath,
+                        voices = File(dir, "voices.bin").absolutePath,
+                        tokens = File(dir, "tokens.txt").absolutePath,
+                        dataDir = File(dir, "espeak-ng-data").absolutePath,
+                        lexicon = lexicons,
+                    )
+                    numThreads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                    provider = "cpu"
+                    debug = false
+                }
             }
-            val session = env.createSession(modelFile.absolutePath, opts)
-            val tokenizer = KokoroTokenizer.load(context)
-            val voices = VoiceStore.load(context)
-            return KokoroEngine(env, session, tokenizer, voices)
+            return KokoroEngine(OfflineTts(assetManager = null, config = cfg))
         }
     }
 }

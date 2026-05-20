@@ -13,6 +13,7 @@ private sealed interface DownloadState {
     data object Idle : DownloadState
     data class Running(val asset: String, val done: Long, val total: Long) : DownloadState {
         val fraction: Float? get() = if (total > 0) done.toFloat() / total else null
+        val isIndeterminate: Boolean get() = total <= 0
     }
     data class Failed(val message: String) : DownloadState
 }
@@ -31,8 +32,9 @@ fun SetupScreen(onProvisioned: () -> Unit) {
         ) {
             Text("Booki", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "First-time setup downloads the Kokoro-82M voice model (~330 MB) " +
-                    "into private app storage. Wi-Fi recommended.",
+                "First-time setup downloads the Kokoro-82M multilingual voice model " +
+                    "(~350 MB compressed, ~650 MB unpacked) into private app storage. " +
+                    "Wi-Fi recommended.",
                 style = MaterialTheme.typography.bodyMedium,
             )
 
@@ -54,9 +56,9 @@ fun SetupScreen(onProvisioned: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(s.asset)
+                    Text(s.asset, style = MaterialTheme.typography.bodySmall)
                     val frac = s.fraction
-                    if (frac != null) {
+                    if (frac != null && !s.isIndeterminate) {
                         LinearProgressIndicator(
                             progress = { frac },
                             modifier = Modifier.fillMaxWidth(),
@@ -64,6 +66,7 @@ fun SetupScreen(onProvisioned: () -> Unit) {
                         Text("${(frac * 100).toInt()}%  (${s.done / 1_048_576} / ${s.total / 1_048_576} MB)")
                     } else {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("${s.done / 1_048_576} MB extracted")
                     }
                 }
 

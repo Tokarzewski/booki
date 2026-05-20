@@ -1,8 +1,33 @@
+import java.net.URI
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val sherpaOnnxVersion = "1.13.2"
+
+val downloadSherpaOnnx by tasks.registering {
+    val aar = layout.projectDirectory.file("libs/sherpa-onnx-$sherpaOnnxVersion.aar").asFile
+    outputs.file(aar)
+    doLast {
+        if (aar.exists()) return@doLast
+        aar.parentFile.mkdirs()
+        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/" +
+            "v$sherpaOnnxVersion/sherpa-onnx-$sherpaOnnxVersion.aar"
+        logger.lifecycle("Downloading $url")
+        URI(url).toURL().openStream().use { input ->
+            aar.outputStream().use { input.copyTo(it) }
+        }
+        logger.lifecycle("Saved ${aar.length() / 1024 / 1024} MB to $aar")
+    }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    dependsOn(downloadSherpaOnnx)
+}
+tasks.withType<JavaCompile>().configureEach { dependsOn(downloadSherpaOnnx) }
 
 android {
     namespace = "dev.booki"
@@ -12,8 +37,11 @@ android {
         applicationId = "dev.booki"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        // Sherpa-onnx ships native libs for 4 ABIs; only arm64-v8a + armeabi-v7a
+        // are realistic for the modern phones Obtainium users install on.
+        ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {
@@ -79,8 +107,13 @@ dependencies {
     }
     implementation("org.jsoup:jsoup:1.18.1")
 
-    // Kokoro TTS via ONNX Runtime
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
+    // sherpa-onnx: wraps Kokoro + espeak-ng phonemization + ONNX Runtime.
+    // The AAR is downloaded by the `:app:downloadSherpaOnnx` task into app/libs/.
+    implementation(files("libs/sherpa-onnx-$sherpaOnnxVersion.aar"))
+
+    // tar.bz2 extraction for the Kokoro model bundle.
+    implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.10")
 
     // Coroutines / WorkManager
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
