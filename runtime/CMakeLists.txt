@@ -146,6 +146,9 @@ target_link_libraries(booki_bench_native PRIVATE booki_native)
 add_executable(booki_bench_block tools/booki_bench_block.c)
 target_link_libraries(booki_bench_block PRIVATE booki_native)
 
+add_executable(booki_run_test_mlp tools/booki_run_test_mlp.c)
+target_link_libraries(booki_run_test_mlp PRIVATE booki_native m)
+
 # -----------------------------------------------------------------------------
 # Tests
 # -----------------------------------------------------------------------------
