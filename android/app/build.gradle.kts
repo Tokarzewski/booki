@@ -86,5 +86,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
+    // ExoPlayer + MediaSession for lock-screen / Bluetooth playback
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-session:1.4.1")
+    implementation("androidx.media3:media3-common:1.4.1")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
