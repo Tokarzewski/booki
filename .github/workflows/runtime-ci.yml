@@ -102,11 +102,16 @@ jobs:
       - name: Golden-output eval vs committed fixture
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
+        # Tolerance is intentionally loose: the golden is recorded on x86 dev
+        # boxes, but CI runs on aarch64 where ORT's matmul ordering differs.
+        # The job of this step is "did inference die or produce garbage?", not
+        # bit-exactness. When #13 lands a deterministic hand-rolled runtime,
+        # drop this back to 1e-4 and record per-arch goldens.
         run: |
           ./build/booki_eval \
             --model cache/model.onnx \
             --golden golden/kokoro-int8.bin \
-            --tolerance 1e-2 \
+            --tolerance 5e-2 \
             --report build/eval-report.json
           jq '.summary' build/eval-report.json
 
