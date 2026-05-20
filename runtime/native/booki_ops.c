@@ -476,6 +476,163 @@ int booki_pad1d_f16(const booki_tensor* x, int64_t before, int64_t after,
     return 0;
 }
 
+/* ------------------------------------------------------------------------- */
+/* TopK along the last axis. O(N log K) per row via partial-sort heap. */
+/* ------------------------------------------------------------------------- */
+
+typedef struct { float v; int64_t i; } kv;
+
+static void heap_sift_down(kv* h, int n, int i) {
+    while (1) {
+        int l = 2 * i + 1, r = 2 * i + 2, s = i;
+        if (l < n && h[l].v < h[s].v) s = l;
+        if (r < n && h[r].v < h[s].v) s = r;
+        if (s == i) break;
+        kv tmp = h[i]; h[i] = h[s]; h[s] = tmp;
+        i = s;
+    }
+}
+
+int booki_topk_f16(const booki_tensor* x, int k,
+                  booki_tensor* values, booki_tensor* indices) {
+    if (!x || !values || !indices) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || values->dtype != BOOKI_DTYPE_F16) return -2;
+    if (indices->dtype != BOOKI_DTYPE_I64) return -3;
+    if (x->rank != values->rank || x->rank != indices->rank) return -4;
+
+    int64_t N = x->shape[x->rank - 1];
+    if (k <= 0 || k > N) return -5;
+    if (values->shape[values->rank - 1] != k || indices->shape[indices->rank - 1] != k)
+        return -6;
+    for (int i = 0; i < x->rank - 1; ++i)
+        if (x->shape[i] != values->shape[i] || x->shape[i] != indices->shape[i])
+            return -7;
+
+    int64_t rows = rows_of(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       vp = (uint16_t*)values->data;
+    int64_t*        ip = (int64_t*)indices->data;
+
+    kv* heap = (kv*)malloc(sizeof(kv) * k);
+    if (!heap) return -8;
+
+    for (int64_t r = 0; r < rows; ++r) {
+        /* Build min-heap of first K elements. */
+        for (int i = 0; i < k; ++i) {
+            heap[i].v = booki_f16_to_f32(xp[r * N + i]);
+            heap[i].i = i;
+        }
+        for (int i = k / 2 - 1; i >= 0; --i) heap_sift_down(heap, k, i);
+
+        for (int64_t i = k; i < N; ++i) {
+            float v = booki_f16_to_f32(xp[r * N + i]);
+            if (v > heap[0].v) {
+                heap[0].v = v; heap[0].i = i;
+                heap_sift_down(heap, k, 0);
+            }
+        }
+
+        /* Heap-sort: repeated extract-min swaps push the smallest to the
+         * end. After the loop the array is descending (largest first). */
+        for (int i = k - 1; i > 0; --i) {
+            kv tmp = heap[0]; heap[0] = heap[i]; heap[i] = tmp;
+            heap_sift_down(heap, i, 0);
+        }
+        for (int i = 0; i < k; ++i) {
+            vp[r * k + i] = booki_f32_to_f16(heap[i].v);
+            ip[r * k + i] = heap[i].i;
+        }
+    }
+    free(heap);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Element-wise And on int8 storage (treats nonzero as true). */
+/* ------------------------------------------------------------------------- */
+
+int booki_and_i8(const booki_tensor* a, const booki_tensor* b, booki_tensor* out) {
+    if (!a || !b || !out) return -1;
+    if (a->dtype != BOOKI_DTYPE_I8 || b->dtype != BOOKI_DTYPE_I8 ||
+        out->dtype != BOOKI_DTYPE_I8) return -2;
+    if (!same_shape(a, b) || !same_shape(a, out)) return -3;
+    int64_t n = booki_tensor_elements(a);
+    const int8_t* ap = (const int8_t*)a->data;
+    const int8_t* bp = (const int8_t*)b->data;
+    int8_t*       op = (int8_t*)out->data;
+    for (int64_t i = 0; i < n; ++i) op[i] = (ap[i] && bp[i]) ? 1 : 0;
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Random fills. xoshiro256** PRNG — 256-bit state, period 2^256-1, fast on
+ * scalar A64. Box-Muller for normal. */
+/* ------------------------------------------------------------------------- */
+
+typedef struct { uint64_t s[4]; } xoshiro256ss;
+
+static inline uint64_t rotl(uint64_t x, int k) { return (x << k) | (x >> (64 - k)); }
+
+static uint64_t xoshiro_next(xoshiro256ss* st) {
+    uint64_t r = rotl(st->s[1] * 5, 7) * 9;
+    uint64_t t = st->s[1] << 17;
+    st->s[2] ^= st->s[0];
+    st->s[3] ^= st->s[1];
+    st->s[1] ^= st->s[2];
+    st->s[0] ^= st->s[3];
+    st->s[2] ^= t;
+    st->s[3] = rotl(st->s[3], 45);
+    return r;
+}
+
+static void xoshiro_seed(xoshiro256ss* st, uint64_t seed) {
+    /* Splitmix64 step to scatter the seed across 256 bits. */
+    uint64_t z = seed;
+    for (int i = 0; i < 4; ++i) {
+        z += 0x9E3779B97F4A7C15ULL;
+        uint64_t x = z;
+        x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+        x = (x ^ (x >> 31));
+        st->s[i] = x;
+    }
+}
+
+static float xoshiro_uniform01(xoshiro256ss* st) {
+    return (xoshiro_next(st) >> 40) * (1.0f / (float)(1 << 24));
+}
+
+int booki_random_uniform_f16(booki_tensor* out, float low, float high, uint64_t seed) {
+    if (!out || out->dtype != BOOKI_DTYPE_F16) return -1;
+    xoshiro256ss st; xoshiro_seed(&st, seed);
+    int64_t n = booki_tensor_elements(out);
+    uint16_t* op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; ++i) {
+        float u = xoshiro_uniform01(&st);
+        op[i] = booki_f32_to_f16(low + u * (high - low));
+    }
+    return 0;
+}
+
+int booki_random_normal_f16(booki_tensor* out, float mean, float stddev, uint64_t seed) {
+    if (!out || out->dtype != BOOKI_DTYPE_F16) return -1;
+    xoshiro256ss st; xoshiro_seed(&st, seed);
+    int64_t n = booki_tensor_elements(out);
+    uint16_t* op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; i += 2) {
+        /* Box-Muller transform: pair of normals from pair of uniforms. */
+        float u1 = xoshiro_uniform01(&st);
+        if (u1 < 1e-7f) u1 = 1e-7f;
+        float u2 = xoshiro_uniform01(&st);
+        float r  = sqrtf(-2.0f * logf(u1));
+        float th = 6.283185307179586f * u2;
+        op[i] = booki_f32_to_f16(mean + stddev * (r * cosf(th)));
+        if (i + 1 < n)
+            op[i + 1] = booki_f32_to_f16(mean + stddev * (r * sinf(th)));
+    }
+    return 0;
+}
+
 /* ScatterND (subset that covers Kokoro's vocoder usage).
  *
  * data    : any shape

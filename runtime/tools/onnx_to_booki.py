@@ -64,6 +64,10 @@ SUPPORTED_TRANSLATIONS = {
     "Pad":                "pad1d",
     "ScatterND":          "scatter_nd",
     "ScatterElements":    "scatter_nd",   # approximate; same kernel handles the cases we see
+    "TopK":               "topk",
+    "And":                "and",
+    "RandomUniformLike":  "random_uniform",
+    "RandomNormalLike":   "random_normal",
 }
 
 # ONNX ops that produce no runtime work — pure shape / index / constant

@@ -135,6 +135,22 @@ int booki_pad1d_f16(const booki_tensor* x, int64_t before, int64_t after,
 int booki_scatter_nd_f16(const booki_tensor* data, const booki_tensor* indices,
                         const booki_tensor* updates, booki_tensor* out);
 
+/* TopK along the last axis. Returns the K largest values + their indices
+ * for each row of x. values is fp16, indices is int64. Both must be
+ * shape x.shape with the last axis replaced by K. */
+int booki_topk_f16(const booki_tensor* x, int k,
+                  booki_tensor* values, booki_tensor* indices);
+
+/* Element-wise And on int8/bool storage (0 or 1). */
+int booki_and_i8(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
+
+/* Pseudo-random fill — deterministic given seed. Distribution = uniform
+ * on [low, high] or standard normal (mean=0, stddev=1). Like-ops in ONNX
+ * derive their output shape from an input tensor; the runtime accepts an
+ * out tensor already sized by the caller. */
+int booki_random_uniform_f16(booki_tensor* out, float low, float high, uint64_t seed);
+int booki_random_normal_f16 (booki_tensor* out, float mean, float stddev, uint64_t seed);
+
 /* Element-wise binary ops. Same shape, in-place (out = a) allowed. */
 int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
 int booki_sub_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
