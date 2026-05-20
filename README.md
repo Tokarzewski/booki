@@ -1,7 +1,6 @@
 # Booki
 
-Mobile app for ebooks and audiobooks based on [audiblez](https://github.com/santinic/audiblez).  
-EPUB → audiobook on Android, fully on-device, using Kokoro-82M via ONNX Runtime.
+Mobile app for ebooks and AI generated audiobooks based on [audiblez](https://github.com/santinic/audiblez).  
 
 ## Install
 
