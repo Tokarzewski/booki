@@ -65,7 +65,7 @@ jobs:
 
       - name: Fetch Kokoro INT8 model
         if: steps.model-cache.outputs.cache-hit != 'true'
-        run: runtime/scripts/fetch-kokoro.sh
+        run: ./scripts/fetch-kokoro.sh
 
       - name: Configure (Release, with sanitizers in a side build)
         run: |
