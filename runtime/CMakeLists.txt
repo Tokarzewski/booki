@@ -106,7 +106,8 @@ set(BOOKI_NATIVE_SOURCES
     native/booki_matmul.c
     native/booki_ops.c
     native/booki_conv1d.c
-    native/booki_gguf.c)
+    native/booki_gguf.c
+    native/booki_graph.c)
 
 # SME backend: enabled when cross-compiling for aarch64 with a recent clang
 # (NDK r28+ ships clang 19). Detection here is "are we aarch64 AND did the
@@ -178,3 +179,7 @@ add_test(NAME mha COMMAND test_mha)
 add_executable(test_gguf native/tests/test_gguf.c)
 target_link_libraries(test_gguf PRIVATE booki_native m)
 add_test(NAME gguf COMMAND test_gguf)
+
+add_executable(test_graph native/tests/test_graph.c)
+target_link_libraries(test_graph PRIVATE booki_native m)
+add_test(NAME graph COMMAND test_graph)
