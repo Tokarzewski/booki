@@ -88,11 +88,13 @@ fun SettingsScreen(onBack: () -> Unit) {
             Text("Active quality", style = MaterialTheme.typography.titleMedium)
             Engines.factories.forEach { factory ->
                 val installed = factory.isProvisioned(context)
+                val supported = factory.isSupportedOn(context)
+                val selectable = installed && supported && !factory.isExperimental
                 ListItem(
                     leadingContent = {
                         RadioButton(
                             selected = currentQuality == factory.id,
-                            enabled = installed,
+                            enabled = selectable,
                             onClick = {
                                 with(Settings) { context.quality = factory.id }
                                 currentQuality = factory.id
@@ -102,8 +104,12 @@ fun SettingsScreen(onBack: () -> Unit) {
                     headlineContent = { Text(factory.displayName) },
                     supportingContent = {
                         Text(
-                            if (installed) "Installed · ~${factory.ramMb} MB RAM"
-                            else "Not installed · ${factory.downloadSizeMb} MB download",
+                            when {
+                                factory.isExperimental -> "Coming soon — tracked in issue #6"
+                                !supported -> "Not supported on this device (needs ~${factory.ramMb * 3 / 2} MB RAM)"
+                                installed -> "Installed · ~${factory.ramMb} MB RAM"
+                                else -> "Not installed · ${factory.downloadSizeMb} MB download"
+                            },
                         )
                     },
                 )

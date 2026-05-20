@@ -18,6 +18,7 @@ import dev.booki.audio.M4aMuxer
 import dev.booki.data.Settings
 import dev.booki.data.Settings.quality
 import dev.booki.epub.EpubReader
+import dev.booki.epub.TextNormalizer
 import dev.booki.epub.TextSplitter
 import kotlinx.coroutines.*
 import java.io.File
@@ -99,7 +100,7 @@ class SynthesisService : Service() {
                     var processed = 0
                     for (chapter in chapters) {
                         Progress.chapter(chapter.title)
-                        for (chunk in TextSplitter.split(chapter.text)) {
+                        for (chunk in TextSplitter.split(TextNormalizer.normalize(chapter.text))) {
                             ensureActive()
                             val audio = engine.synthesize(chunk, voice, speed)
                             preview?.write(audio)            // blocks until played → natural backpressure

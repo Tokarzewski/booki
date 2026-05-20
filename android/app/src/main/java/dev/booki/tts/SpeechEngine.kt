@@ -1,6 +1,7 @@
 package dev.booki.tts
 
 import android.content.Context
+import dev.booki.util.DeviceCapabilities
 
 /**
  * Pluggable TTS backend. Each implementation owns its native runtime, its
@@ -22,8 +23,15 @@ interface SpeechEngine : AutoCloseable {
         val displayName: String
         val downloadSizeMb: Int
         val ramMb: Int
+        val isExperimental: Boolean get() = false
         fun isProvisioned(context: Context): Boolean
         fun load(context: Context): SpeechEngine
+
+        /** True if the current device has enough RAM headroom to run this engine. */
+        fun isSupportedOn(context: Context): Boolean {
+            val caps = DeviceCapabilities.of(context)
+            return caps.isArm64 && caps.ramMb >= ramMb * 1.5
+        }
     }
 
     enum class Quality { KOKORO_INT8, KOKORO_FP32, ORPHEUS_INT4 }
@@ -34,10 +42,13 @@ object Engines {
         listOf(
             KokoroEngine.Int8Factory,
             KokoroEngine.Fp32Factory,
-            // OrpheusEngine.Factory comes online in v0.5
+            OrpheusEngine.Factory,
         )
     }
 
     fun factoryFor(quality: SpeechEngine.Quality): SpeechEngine.Factory? =
         factories.firstOrNull { it.id == quality }
+
+    fun supported(context: Context): List<SpeechEngine.Factory> =
+        factories.filter { it.isSupportedOn(context) }
 }

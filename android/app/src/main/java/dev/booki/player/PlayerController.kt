@@ -9,6 +9,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.MoreExecutors
 import dev.booki.data.AudioLibrary
+import dev.booki.data.PlaybackPositions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -70,7 +71,9 @@ object PlayerController {
         )
     }
 
-    fun play(context: Context, item: AudioLibrary.Audiobook) {
+    private var currentPath: String? = null
+
+    fun play(context: Context, item: AudioLibrary.Audiobook, fromStart: Boolean = false) {
         val c = controller ?: return
         val uri = AudioLibrary.uriFor(context, item)
         val mediaItem = MediaItem.Builder()
@@ -79,11 +82,27 @@ object PlayerController {
             .build()
         c.setMediaItem(mediaItem)
         c.prepare()
+        currentPath = item.file.path
+        val startMs = if (fromStart) 0L else PlaybackPositions.positionMs(context, item.file.path)
+        if (startMs > 0L) c.seekTo(startMs)
         c.playWhenReady = true
         refresh()
     }
 
+    /** Persists the current playhead. Call when pausing or every few seconds while playing. */
+    fun savePosition(context: Context) {
+        val c = controller ?: return
+        val path = currentPath ?: return
+        if (c.duration > 0 && c.currentPosition < c.duration - 5_000) {
+            PlaybackPositions.save(context, path, c.currentPosition)
+        } else if (c.duration > 0) {
+            // Reached the end — drop the bookmark.
+            PlaybackPositions.clear(context, path)
+        }
+    }
+
     fun pause() { controller?.pause(); refresh() }
+    fun pauseAndSave(context: Context) { pause(); savePosition(context) }
     fun resume() { controller?.play(); refresh() }
     fun seekTo(ms: Long) { controller?.seekTo(ms); refresh() }
     fun setSpeed(factor: Float) {

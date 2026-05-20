@@ -24,10 +24,16 @@ fun PlayerScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) { PlayerController.connect(context) }
     LaunchedEffect(state.isPlaying) {
+        var ticks = 0
         while (state.isPlaying) {
             PlayerController.refresh()
+            ticks++
+            // Persist position every ~5 seconds.
+            if (ticks % 10 == 0) PlayerController.savePosition(context)
             delay(500)
         }
+        // Save once when playback pauses or ends.
+        PlayerController.savePosition(context)
     }
 
     Scaffold(
@@ -64,7 +70,7 @@ fun PlayerScreen(onBack: () -> Unit) {
                 }
                 FilledIconButton(
                     onClick = {
-                        if (state.isPlaying) PlayerController.pause()
+                        if (state.isPlaying) PlayerController.pauseAndSave(context)
                         else PlayerController.resume()
                     },
                     modifier = Modifier.size(72.dp),

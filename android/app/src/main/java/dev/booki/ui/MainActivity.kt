@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.booki.data.AudioLibrary
 import dev.booki.data.Library
+import dev.booki.data.PlaybackPositions
 import dev.booki.data.Settings
 import dev.booki.data.Settings.defaultSpeed
 import dev.booki.data.Settings.defaultVoice
@@ -189,17 +191,29 @@ fun BookiApp(
                     LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
                         items(audiobooks, key = { it.file.path }) { item ->
                             var menuOpen by remember(item.file.path) { mutableStateOf(false) }
+                            val resumeMs = remember(item.file.path) {
+                                PlaybackPositions.positionMs(context, item.file.path)
+                            }
                             ListItem(
                                 leadingContent = {
                                     IconButton(onClick = {
                                         PlayerController.play(context, item)
                                         onOpenPlayer()
                                     }) {
-                                        Icon(Icons.Default.PlayArrow, contentDescription = "Play")
+                                        Icon(
+                                            if (resumeMs > 0) Icons.Default.Replay else Icons.Default.PlayArrow,
+                                            contentDescription = if (resumeMs > 0) "Resume" else "Play",
+                                        )
                                     }
                                 },
                                 headlineContent = { Text(item.title) },
-                                supportingContent = { Text("${item.sizeMb} MB") },
+                                supportingContent = {
+                                    if (resumeMs > 0) {
+                                        Text("Resume from ${formatMs(resumeMs)} · ${item.sizeMb} MB")
+                                    } else {
+                                        Text("${item.sizeMb} MB")
+                                    }
+                                },
                                 trailingContent = {
                                     Box {
                                         IconButton(onClick = { menuOpen = true }) {
@@ -211,6 +225,17 @@ fun BookiApp(
                                                 leadingIcon = { Icon(Icons.Default.Edit, null) },
                                                 onClick = { menuOpen = false; renameAudio = item },
                                             )
+                                            if (resumeMs > 0) {
+                                                DropdownMenuItem(
+                                                    text = { Text("Play from start") },
+                                                    leadingIcon = { Icon(Icons.Default.PlayArrow, null) },
+                                                    onClick = {
+                                                        menuOpen = false
+                                                        PlayerController.play(context, item, fromStart = true)
+                                                        onOpenPlayer()
+                                                    },
+                                                )
+                                            }
                                             DropdownMenuItem(
                                                 text = { Text("Delete") },
                                                 leadingIcon = { Icon(Icons.Default.Delete, null) },
@@ -420,9 +445,20 @@ fun BookiApp(
             title = { Text("Delete \"${item.title}\"?") },
             text = { Text("Removes the audiobook .m4a file.") },
             confirmButton = {
-                TextButton(onClick = { AudioLibrary.delete(context, item); deleteAudio = null }) { Text("Delete") }
+                TextButton(onClick = {
+                    PlaybackPositions.clear(context, item.file.path)
+                    AudioLibrary.delete(context, item); deleteAudio = null
+                }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleteAudio = null }) { Text("Cancel") } },
         )
     }
+}
+
+private fun formatMs(ms: Long): String {
+    val total = ms / 1000
+    val h = total / 3600
+    val m = (total % 3600) / 60
+    val s = total % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
