@@ -1,0 +1,209 @@
+# Booki custom runtime CI — scaffolded ahead of issue #13.
+#
+# Stays dormant until any file under `runtime/` is added/changed. Once #13
+# starts, the runtime tree should look roughly like:
+#
+#   runtime/
+#     CMakeLists.txt
+#     booki_runtime.h
+#     booki_runtime.c
+#     backends/booki_neon.c
+#     backends/booki_vulkan.c
+#     tools/booki_eval.c
+#     tools/booki_bench.c
+#     tests/             (unit tests, run via ctest)
+#     golden/            (reference outputs from sherpa-onnx for diff)
+#
+# This workflow runs on GitHub's free arm64 Linux runner so kernels execute
+# natively (real NEON, no QEMU). For final perf truth, use the device CI
+# workflow that talks to a phone over adb (see issue #13 plan).
+
+name: Runtime CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runtime/**"
+      - ".github/workflows/runtime-ci.yml"
+  pull_request:
+    paths:
+      - "runtime/**"
+      - ".github/workflows/runtime-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write   # for the bench-result PR comment
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Build + test on Linux/arm64 — native NEON, ~½ phone speed.
+  # ---------------------------------------------------------------------
+  arm64-linux:
+    name: arm64-linux (native)
+    runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build clang lld \
+            libomp-dev python3 jq
+
+      - name: Configure (Release, with sanitizers in a side build)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DBOOKI_ENABLE_NEON=ON
+
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang \
+            -DBOOKI_ENABLE_NEON=ON \
+            -DBOOKI_SANITIZERS=address,undefined
+
+      - name: Build
+        run: |
+          cmake --build build --parallel
+          cmake --build build-asan --parallel
+
+      - name: Unit tests (Release)
+        working-directory: runtime/build
+        run: ctest --output-on-failure
+
+      - name: Unit tests (ASan/UBSan)
+        working-directory: runtime/build-asan
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --output-on-failure
+
+      - name: Golden-output eval vs sherpa-onnx baseline
+        run: |
+          ./build/tools/booki_eval \
+            --golden golden/kokoro-fp32.bin \
+            --tolerance 1e-3 \
+            --report build/eval-report.json
+          jq '.summary' build/eval-report.json
+
+      - name: Micro-benchmarks
+        run: |
+          ./build/tools/booki_bench --json > build/bench.json
+          jq '.' build/bench.json
+
+      - name: Upload bench JSON
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-arm64-linux
+          path: runtime/build/bench.json
+
+      - name: Regression gate (vs baseline on main)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Download the main-branch baseline if it exists; skip gate otherwise.
+          mkdir -p baseline
+          if gh run download -n bench-arm64-linux \
+                -R "$GITHUB_REPOSITORY" \
+                --dir baseline \
+                $(gh run list -w "Runtime CI" -b main -L 1 --json databaseId -q '.[0].databaseId') 2>/dev/null; then
+            python3 ../scripts/regression-gate.py \
+              --baseline baseline/bench.json \
+              --current build/bench.json \
+              --max-regression 0.10
+          else
+            echo "::notice::No baseline bench artifact on main yet — skipping regression gate"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: PR comment with bench summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const bench = JSON.parse(fs.readFileSync('runtime/build/bench.json', 'utf8'));
+            const rows = bench.benchmarks.map(b =>
+              `| ${b.name} | ${b.ms_per_token.toFixed(2)} ms | ${b.tokens_per_sec.toFixed(1)} tok/s |`
+            ).join('\n');
+            const body = [
+              '### Runtime micro-benchmarks (arm64-linux)',
+              '',
+              '| Benchmark | ms/token | tok/s |',
+              '|---|---|---|',
+              rows,
+              '',
+              `_Runner: ubuntu-24.04-arm · commit ${context.sha.slice(0, 7)}_`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # ---------------------------------------------------------------------
+  # Cross-compile for Android arm64 with the NDK. Verifies the runtime
+  # links cleanly against `__ANDROID__` (libc differences, no /proc tricks,
+  # bionic-style threading) before any device run.
+  # ---------------------------------------------------------------------
+  android-arm64-build:
+    name: android-arm64 (NDK cross-compile)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: runtime
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Install host build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build
+
+      - name: Configure (Android arm64-v8a, Release)
+        run: |
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBOOKI_ENABLE_NEON=ON
+
+      - name: Build
+        run: cmake --build build-android --parallel
+
+      - name: Verify binary is arm64 + has NEON
+        run: |
+          file build-android/tools/booki_bench | tee /dev/stderr | grep -q "ARM aarch64"
+          # Confirm the NEON-tagged build symbols are present.
+          ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm \
+            build-android/libbooki_runtime.so | grep -q "_neon_" \
+            && echo "NEON kernels present" \
+            || (echo "::error::No NEON kernels in shipped library"; exit 1)
+
+      - name: Package shippable artifacts
+        run: |
+          mkdir -p artifact/arm64-v8a
+          cp build-android/libbooki_runtime.so artifact/arm64-v8a/
+          cp build-android/tools/booki_bench artifact/arm64-v8a/
+          cp build-android/tools/booki_eval artifact/arm64-v8a/
+
+      - name: Upload Android artifact (for the device-CI workflow to pick up)
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-android-arm64
+          path: runtime/artifact/
+          retention-days: 14
