@@ -80,7 +80,11 @@ typedef enum {
     BOOKI_BACKEND_AUTO = 0,
     BOOKI_BACKEND_SCALAR,
     BOOKI_BACKEND_NEON,
+    BOOKI_BACKEND_SME,
 } booki_backend;
+
+/* Runtime probe — set by booki_init() (called automatically on first use). */
+int booki_has_sme(void);
 
 /* Selects which kernels run. AUTO uses NEON when compiled with __ARM_NEON. */
 void          booki_set_backend(booki_backend b);

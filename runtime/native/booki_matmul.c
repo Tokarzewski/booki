@@ -190,6 +190,11 @@ void booki_matmul_neon_marker_(void) {}
 /* Public entry                                                              */
 /* ------------------------------------------------------------------------- */
 
+/* Defined in booki_sme.c when compiled with SME support. */
+#if defined(BOOKI_HAS_SME_BUILD)
+int booki_matmul_f16_sme(const booki_tensor* a, const booki_tensor* b, booki_tensor* c);
+#endif
+
 int booki_matmul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* c) {
     if (!a || !b || !c) return -1;
     if (a->dtype != BOOKI_DTYPE_F16 || b->dtype != BOOKI_DTYPE_F16 || c->dtype != BOOKI_DTYPE_F16)
@@ -202,6 +207,11 @@ int booki_matmul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor*
     if (c->shape[0] != M || c->shape[1] != N) return -5;
 
     booki_backend backend = booki_backend_active();
+#if defined(BOOKI_HAS_SME_BUILD)
+    if (backend == BOOKI_BACKEND_SME) {
+        return booki_matmul_f16_sme(a, b, c);
+    }
+#endif
 #if HAVE_NEON
     if (backend == BOOKI_BACKEND_NEON) {
         matmul_f16_neon((const booki_f16*)a->data, (const booki_f16*)b->data,

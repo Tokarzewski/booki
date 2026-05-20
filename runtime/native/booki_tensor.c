@@ -106,9 +106,41 @@ static booki_backend g_backend = BOOKI_BACKEND_AUTO;
 
 void booki_set_backend(booki_backend b) { g_backend = b; }
 
+/* SME probe via the kernel-provided AUX vector. HWCAP2_SME (bit 23) is the
+ * canonical signal on Linux/Android that the CPU + kernel support SME
+ * instructions in user-space.  Cached on first call. */
+#if defined(__linux__) || defined(__ANDROID__)
+  #include <sys/auxv.h>
+  #ifndef AT_HWCAP2
+    #define AT_HWCAP2 26
+  #endif
+  #ifndef HWCAP2_SME
+    #define HWCAP2_SME (1UL << 23)
+  #endif
+#endif
+
+int booki_has_sme(void) {
+#if defined(__aarch64__) && (defined(__linux__) || defined(__ANDROID__))
+    static int cached = -1;
+    if (cached < 0) {
+        unsigned long h2 = getauxval(AT_HWCAP2);
+        cached = (h2 & HWCAP2_SME) ? 1 : 0;
+    }
+    return cached;
+#else
+    return 0;
+#endif
+}
+
 booki_backend booki_backend_active(void) {
     if (g_backend != BOOKI_BACKEND_AUTO) return g_backend;
-#if defined(__ARM_NEON) || defined(__aarch64__)
+#if defined(__aarch64__)
+    /* SME backend is built and probed but not yet on the default path —
+     * the FMOPA-based kernel still has a layout bug being chased.  Opt
+     * in explicitly with booki_set_backend(BOOKI_BACKEND_SME) until the
+     * test_matmul cases pass on real hardware. */
+    return BOOKI_BACKEND_NEON;
+#elif defined(__ARM_NEON)
     return BOOKI_BACKEND_NEON;
 #else
     return BOOKI_BACKEND_SCALAR;
@@ -120,6 +152,7 @@ const char* booki_backend_describe(booki_backend b) {
     switch (b) {
         case BOOKI_BACKEND_SCALAR: return "scalar";
         case BOOKI_BACKEND_NEON:   return "neon";
+        case BOOKI_BACKEND_SME:    return "sme";
         default:                   return "auto";
     }
 }

@@ -64,34 +64,35 @@ if(ORT_PKG)
 endif()
 
 # -----------------------------------------------------------------------------
-# libbooki_runtime
+# libbooki_runtime (ORT baseline; host builds only — Android uses sherpa-onnx)
 # -----------------------------------------------------------------------------
-add_library(booki_runtime SHARED booki_baseline.c)
-target_include_directories(booki_runtime PUBLIC .)
 if(ORT_PKG)
+    add_library(booki_runtime SHARED booki_baseline.c)
+    target_include_directories(booki_runtime PUBLIC .)
     target_link_libraries(booki_runtime PUBLIC onnxruntime)
-    # Make the .so available next to the binaries for direct execution.
+    target_compile_options(booki_runtime PRIVATE -Wall -Wextra -Wno-unused-parameter)
     add_custom_command(TARGET booki_runtime POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so"
             "$<TARGET_FILE_DIR:booki_runtime>/")
 endif()
-target_compile_options(booki_runtime PRIVATE -Wall -Wextra -Wno-unused-parameter)
 
-# Stub the NEON kernel symbol so the CI 'grep _neon_' assertion passes when
-# the option is on. Real kernels land with #13.
-if(BOOKI_ENABLE_NEON)
+# Stub flag preserved from the original scaffolding — actual NEON dispatch
+# now lives in booki_native (compile-time __ARM_NEON detection).
+if(BOOKI_ENABLE_NEON AND TARGET booki_runtime)
     target_compile_definitions(booki_runtime PRIVATE BOOKI_HAS_NEON=1)
 endif()
 
 # -----------------------------------------------------------------------------
 # Tools
 # -----------------------------------------------------------------------------
-add_executable(booki_bench tools/booki_bench.c)
-target_link_libraries(booki_bench PRIVATE booki_runtime)
+if(ORT_PKG)
+    add_executable(booki_bench tools/booki_bench.c)
+    target_link_libraries(booki_bench PRIVATE booki_runtime)
 
-add_executable(booki_eval tools/booki_eval.c)
-target_link_libraries(booki_eval PRIVATE booki_runtime m)
+    add_executable(booki_eval tools/booki_eval.c)
+    target_link_libraries(booki_eval PRIVATE booki_runtime m)
+endif()
 
 # -----------------------------------------------------------------------------
 # Native (hand-rolled) runtime — see runtime/native/ and issue #13.
@@ -100,19 +101,42 @@ target_link_libraries(booki_eval PRIVATE booki_runtime m)
 # coexist while op coverage is incomplete. Both feed runtime-ci.yml's bench
 # regression gate.
 # -----------------------------------------------------------------------------
-add_library(booki_native SHARED
+set(BOOKI_NATIVE_SOURCES
     native/booki_tensor.c
     native/booki_matmul.c
     native/booki_ops.c
     native/booki_conv1d.c
     native/booki_gguf.c)
+
+# SME backend: enabled when cross-compiling for aarch64 with a recent clang
+# (NDK r28+ ships clang 19). Detection here is "are we aarch64 AND did the
+# user pass -DBOOKI_FORCE_SME=OFF to skip" — the actual feature gate is the
+# compiler flag below; if it's not supported, the build fails loudly.
+option(BOOKI_FORCE_SME "Force-enable SME backend on aarch64" ON)
+set(BOOKI_HAS_SME OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND BOOKI_FORCE_SME)
+    set(BOOKI_HAS_SME ON)
+endif()
+
+if(BOOKI_HAS_SME)
+    list(APPEND BOOKI_NATIVE_SOURCES native/booki_sme.c)
+    message(STATUS "Booki: SME backend ENABLED")
+else()
+    message(STATUS "Booki: SME backend disabled (compiler / arch lacks SME2)")
+endif()
+
+add_library(booki_native SHARED ${BOOKI_NATIVE_SOURCES})
 target_include_directories(booki_native PUBLIC native)
 target_link_libraries(booki_native PUBLIC m)
 target_compile_options(booki_native PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    # A64 has fp16 + dot-product extensions; enable them for the NEON path.
-    target_compile_options(booki_native PRIVATE -march=armv8.2-a+fp16+dotprod)
+    if(BOOKI_HAS_SME)
+        target_compile_options(booki_native PRIVATE -march=armv9.2-a+sme+sme2+fp16+dotprod)
+        target_compile_definitions(booki_native PRIVATE BOOKI_HAS_SME_BUILD=1)
+    else()
+        target_compile_options(booki_native PRIVATE -march=armv8.2-a+fp16+dotprod)
+    endif()
 endif()
 
 add_executable(booki_bench_native tools/booki_bench_native.c)
@@ -125,9 +149,11 @@ target_link_libraries(booki_bench_block PRIVATE booki_native)
 # Tests
 # -----------------------------------------------------------------------------
 enable_testing()
-add_executable(test_smoke tests/test_smoke.c)
-target_link_libraries(test_smoke PRIVATE booki_runtime)
-add_test(NAME smoke COMMAND test_smoke)
+if(ORT_PKG)
+    add_executable(test_smoke tests/test_smoke.c)
+    target_link_libraries(test_smoke PRIVATE booki_runtime)
+    add_test(NAME smoke COMMAND test_smoke)
+endif()
 
 add_executable(test_arena native/tests/test_arena.c)
 target_link_libraries(test_arena PRIVATE booki_native)
