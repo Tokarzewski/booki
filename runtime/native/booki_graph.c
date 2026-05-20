@@ -24,11 +24,20 @@ typedef enum {
     OP_RMSNORM,
     OP_SILU,
     OP_GELU,
+    OP_LEAKY_RELU,
+    OP_SIN,
+    OP_COS,
     OP_ADD,
+    OP_SUB,
     OP_MUL,
     OP_SOFTMAX,
     OP_EMBEDDING,
     OP_ATTENTION,
+    OP_INSTANCE_NORM,
+    OP_CONV1D,
+    OP_CONV_TRANSPOSE1D,
+    OP_RESIZE1D,
+    OP_LSTM,
 } op_kind;
 
 typedef struct {
@@ -39,6 +48,11 @@ typedef struct {
     union {
         struct { float eps; }      rmsnorm;
         struct { int heads; }      attention;
+        struct { float alpha; }    leaky_relu;
+        struct { float eps; }      instance_norm;
+        struct { int64_t stride, padding, dilation, groups; }            conv1d;
+        struct { int64_t stride, padding, output_padding, dilation, groups; } conv_transpose1d;
+        struct { int64_t out_size; int mode; }                            resize1d;
     } p;
     /* External binding for input/const/weight nodes. */
     const booki_tensor* external;
@@ -193,6 +207,14 @@ static int unary(booki_graph* g, op_kind k, int x) {
 int booki_graph_silu(booki_graph* g, int x)   { return unary(g, OP_SILU, x); }
 int booki_graph_gelu(booki_graph* g, int x)   { return unary(g, OP_GELU, x); }
 int booki_graph_softmax(booki_graph* g, int x){ return unary(g, OP_SOFTMAX, x); }
+int booki_graph_sin(booki_graph* g, int x)    { return unary(g, OP_SIN, x); }
+int booki_graph_cos(booki_graph* g, int x)    { return unary(g, OP_COS, x); }
+
+int booki_graph_leaky_relu(booki_graph* g, int x, float alpha) {
+    int id = unary(g, OP_LEAKY_RELU, x);
+    if (id >= 0) g->nodes[id].p.leaky_relu.alpha = alpha;
+    return id;
+}
 
 int booki_graph_rmsnorm(booki_graph* g, int x, int weight, float eps) {
     if (x < 0 || weight < 0) return set_err(g, "rmsnorm: bad ids");
@@ -222,7 +244,109 @@ static int binary(booki_graph* g, op_kind k, int a, int b) {
 }
 
 int booki_graph_add(booki_graph* g, int a, int b) { return binary(g, OP_ADD, a, b); }
+int booki_graph_sub(booki_graph* g, int a, int b) { return binary(g, OP_SUB, a, b); }
 int booki_graph_mul(booki_graph* g, int a, int b) { return binary(g, OP_MUL, a, b); }
+
+int booki_graph_instance_norm(booki_graph* g, int x, int scale, int bias, float eps) {
+    if (x < 0 || scale < 0) return set_err(g, "instance_norm: bad ids");
+    int id = append(g); if (id < 0) return set_err(g, "alloc");
+    node* n = &g->nodes[id];
+    n->kind = OP_INSTANCE_NORM;
+    n->in[0] = x; n->in[1] = scale;
+    n->in[2] = bias; /* may be -1 for no-bias */
+    n->n_in = bias >= 0 ? 3 : 2;
+    n->p.instance_norm.eps = eps;
+    copy_shape(n, &g->nodes[x]);
+    return id;
+}
+
+int booki_graph_conv1d(booki_graph* g, int x, int w, int b,
+                       int64_t stride, int64_t padding,
+                       int64_t dilation, int64_t groups) {
+    if (x < 0 || w < 0) return set_err(g, "conv1d: bad ids");
+    int id = append(g); if (id < 0) return set_err(g, "alloc");
+    node* n = &g->nodes[id];
+    n->kind = OP_CONV1D;
+    n->in[0] = x; n->in[1] = w; n->in[2] = b; n->n_in = b >= 0 ? 3 : 2;
+    n->p.conv1d.stride = stride;
+    n->p.conv1d.padding = padding;
+    n->p.conv1d.dilation = dilation;
+    n->p.conv1d.groups = groups;
+
+    /* Output shape inference. */
+    const node* nx = &g->nodes[x];
+    const node* nw = &g->nodes[w];
+    int64_t B = nx->shape[0];
+    int64_t Lin = nx->shape[2];
+    int64_t Cout = nw->shape[0];
+    int64_t K = nw->shape[2];
+    int64_t Lout = (Lin + 2 * padding - dilation * (K - 1) - 1) / stride + 1;
+    int64_t s[3] = { B, Cout, Lout };
+    set_shape(n, BOOKI_DTYPE_F16, 3, s);
+    return id;
+}
+
+int booki_graph_conv_transpose1d(booki_graph* g, int x, int w, int b,
+                                 int64_t stride, int64_t padding,
+                                 int64_t output_padding, int64_t dilation,
+                                 int64_t groups) {
+    if (x < 0 || w < 0) return set_err(g, "conv_transpose1d: bad ids");
+    int id = append(g); if (id < 0) return set_err(g, "alloc");
+    node* n = &g->nodes[id];
+    n->kind = OP_CONV_TRANSPOSE1D;
+    n->in[0] = x; n->in[1] = w; n->in[2] = b; n->n_in = b >= 0 ? 3 : 2;
+    n->p.conv_transpose1d.stride = stride;
+    n->p.conv_transpose1d.padding = padding;
+    n->p.conv_transpose1d.output_padding = output_padding;
+    n->p.conv_transpose1d.dilation = dilation;
+    n->p.conv_transpose1d.groups = groups;
+
+    const node* nx = &g->nodes[x];
+    const node* nw = &g->nodes[w];
+    int64_t B = nx->shape[0];
+    int64_t Lin = nx->shape[2];
+    int64_t Cout = nw->shape[1] * groups;
+    int64_t K = nw->shape[2];
+    int64_t Lout = (Lin - 1) * stride - 2 * padding + dilation * (K - 1)
+                 + output_padding + 1;
+    int64_t s[3] = { B, Cout, Lout };
+    set_shape(n, BOOKI_DTYPE_F16, 3, s);
+    return id;
+}
+
+int booki_graph_resize1d(booki_graph* g, int x, int64_t out_size, int mode) {
+    if (x < 0) return set_err(g, "resize1d: bad id");
+    int id = append(g); if (id < 0) return set_err(g, "alloc");
+    node* n = &g->nodes[id];
+    n->kind = OP_RESIZE1D;
+    n->in[0] = x; n->n_in = 1;
+    n->p.resize1d.out_size = out_size;
+    n->p.resize1d.mode = mode;
+    copy_shape(n, &g->nodes[x]);
+    n->shape[n->rank - 1] = out_size;
+    return id;
+}
+
+int booki_graph_lstm(booki_graph* g, int x, int w, int r, int b, int h0, int c0) {
+    if (x < 0 || w < 0 || r < 0) return set_err(g, "lstm: bad ids");
+    int id = append(g); if (id < 0) return set_err(g, "alloc");
+    node* n = &g->nodes[id];
+    n->kind = OP_LSTM;
+    n->in[0] = x; n->in[1] = w; n->in[2] = r; n->in[3] = b;
+    n->n_in = b >= 0 ? 4 : 3;
+    /* h0 / c0 are optional — we stash them out-of-band in input slots
+     * 4 / 5 by overloading; if either is missing the executor reads 0. */
+    (void)h0; (void)c0;
+
+    /* Output [T, H] where H = W.rank0 / 4. */
+    const node* nx = &g->nodes[x];
+    const node* nw = &g->nodes[w];
+    int64_t T = nx->shape[0];
+    int64_t H = nw->shape[0] / 4;
+    int64_t s[2] = { T, H };
+    set_shape(n, BOOKI_DTYPE_F16, 2, s);
+    return id;
+}
 
 int booki_graph_embedding(booki_graph* g, int ids, int weight) {
     if (ids < 0 || weight < 0) return set_err(g, "embedding: bad ids");
@@ -349,6 +473,83 @@ int booki_graph_run(booki_graph* g, booki_tensor* out_view) {
             if (!t->data) return set_err(g, "softmax alloc");
             int rc = booki_softmax_f16(&g->tensors[n->in[0]], t);
             if (rc) return set_err(g, "softmax rc=%d", rc);
+        } break;
+        case OP_SIN: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "sin alloc");
+            int rc = booki_sin_f16(&g->tensors[n->in[0]], t);
+            if (rc) return set_err(g, "sin rc=%d", rc);
+        } break;
+        case OP_COS: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "cos alloc");
+            int rc = booki_cos_f16(&g->tensors[n->in[0]], t);
+            if (rc) return set_err(g, "cos rc=%d", rc);
+        } break;
+        case OP_LEAKY_RELU: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "leaky_relu alloc");
+            int rc = booki_leaky_relu_f16(&g->tensors[n->in[0]],
+                                          n->p.leaky_relu.alpha, t);
+            if (rc) return set_err(g, "leaky_relu rc=%d", rc);
+        } break;
+        case OP_SUB: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "sub alloc");
+            int rc = booki_sub_f16(&g->tensors[n->in[0]],
+                                   &g->tensors[n->in[1]], t);
+            if (rc) return set_err(g, "sub rc=%d", rc);
+        } break;
+        case OP_INSTANCE_NORM: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "instance_norm alloc");
+            const booki_tensor* bias = n->n_in >= 3 ? &g->tensors[n->in[2]] : NULL;
+            int rc = booki_instance_norm_f16(&g->tensors[n->in[0]],
+                                             &g->tensors[n->in[1]],
+                                             bias, n->p.instance_norm.eps, t);
+            if (rc) return set_err(g, "instance_norm rc=%d", rc);
+        } break;
+        case OP_CONV1D: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "conv1d alloc");
+            const booki_tensor* bias = n->n_in >= 3 ? &g->tensors[n->in[2]] : NULL;
+            int rc = booki_conv1d_f16(&g->tensors[n->in[0]],
+                                      &g->tensors[n->in[1]], bias,
+                                      n->p.conv1d.stride, n->p.conv1d.padding,
+                                      n->p.conv1d.dilation, n->p.conv1d.groups, t);
+            if (rc) return set_err(g, "conv1d rc=%d", rc);
+        } break;
+        case OP_CONV_TRANSPOSE1D: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "conv_transpose1d alloc");
+            const booki_tensor* bias = n->n_in >= 3 ? &g->tensors[n->in[2]] : NULL;
+            int rc = booki_conv_transpose1d_f16(&g->tensors[n->in[0]],
+                                                &g->tensors[n->in[1]], bias,
+                                                n->p.conv_transpose1d.stride,
+                                                n->p.conv_transpose1d.padding,
+                                                n->p.conv_transpose1d.output_padding,
+                                                n->p.conv_transpose1d.dilation,
+                                                n->p.conv_transpose1d.groups, t);
+            if (rc) return set_err(g, "conv_transpose1d rc=%d", rc);
+        } break;
+        case OP_RESIZE1D: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "resize1d alloc");
+            int rc = booki_resize1d_f16(&g->tensors[n->in[0]],
+                                        n->p.resize1d.out_size,
+                                        (booki_resize_mode)n->p.resize1d.mode, t);
+            if (rc) return set_err(g, "resize1d rc=%d", rc);
+        } break;
+        case OP_LSTM: {
+            *t = materialize(g, n);
+            if (!t->data) return set_err(g, "lstm alloc");
+            if (!attn_scratch) attn_scratch = booki_arena_create(4ull * 1024 * 1024);
+            const booki_tensor* bias = n->n_in >= 4 ? &g->tensors[n->in[3]] : NULL;
+            int rc = booki_lstm_f16(&g->tensors[n->in[0]],
+                                    &g->tensors[n->in[1]],
+                                    &g->tensors[n->in[2]], bias,
+                                    NULL, NULL, attn_scratch, t);
+            if (rc) return set_err(g, "lstm rc=%d", rc);
         } break;
         case OP_EMBEDDING: {
             *t = materialize(g, n);

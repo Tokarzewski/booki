@@ -43,11 +43,26 @@ int booki_graph_matmul   (booki_graph* g, int a, int b);
 int booki_graph_rmsnorm  (booki_graph* g, int x, int weight, float eps);
 int booki_graph_silu     (booki_graph* g, int x);
 int booki_graph_gelu     (booki_graph* g, int x);
+int booki_graph_leaky_relu(booki_graph* g, int x, float alpha);
+int booki_graph_sin      (booki_graph* g, int x);
+int booki_graph_cos      (booki_graph* g, int x);
 int booki_graph_add      (booki_graph* g, int a, int b);
+int booki_graph_sub      (booki_graph* g, int a, int b);
 int booki_graph_mul      (booki_graph* g, int a, int b);
 int booki_graph_softmax  (booki_graph* g, int x);
 int booki_graph_embedding(booki_graph* g, int ids, int weight);
 int booki_graph_attention(booki_graph* g, int q, int k, int v, int num_heads);
+int booki_graph_instance_norm(booki_graph* g, int x, int scale, int bias, float eps);
+int booki_graph_conv1d   (booki_graph* g, int x, int weight, int bias,
+                          int64_t stride, int64_t padding,
+                          int64_t dilation, int64_t groups);
+int booki_graph_conv_transpose1d(booki_graph* g, int x, int weight, int bias,
+                                 int64_t stride, int64_t padding,
+                                 int64_t output_padding, int64_t dilation,
+                                 int64_t groups);
+int booki_graph_resize1d (booki_graph* g, int x, int64_t out_size, int mode);
+int booki_graph_lstm     (booki_graph* g, int x, int w, int r, int b,
+                          int h0, int c0);
 
 void booki_graph_set_output(booki_graph* g, int node);
 
