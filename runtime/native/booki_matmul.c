@@ -107,9 +107,14 @@ static void matmul_f16_scalar(const booki_f16* A, const booki_f16* B, booki_f16*
 /* ------------------------------------------------------------------------- */
 
 #if HAVE_NEON
-/* NEON path operates on native __fp16 storage; we reinterpret the uint16_t
- * buffers as __fp16. This is safe because IEEE-754 binary16 has the same
- * bit-layout in both representations. */
+/* NEON path. fp16 storage in/out, fp32 accumulation, 4x4 register tile.
+ *
+ * Inner loop is the canonical outer-product: for each k, load 4 A elements
+ * (one column slice across the M-tile) and 4 B elements (one row slice
+ * across the N-tile), then FMA each A lane against the whole B row into
+ * the corresponding accumulator row. `vfmaq_laneq_f32` requires the lane
+ * index to be a compile-time constant — hence the explicit 0/1/2/3 lines
+ * rather than an inner `for` loop. */
 static void matmul_f16_neon(const booki_f16* A_u, const booki_f16* B_u, booki_f16* C_u,
                             int64_t M, int64_t N, int64_t K) {
     const __fp16* A = (const __fp16*)A_u;
@@ -117,99 +122,62 @@ static void matmul_f16_neon(const booki_f16* A_u, const booki_f16* B_u, booki_f1
     __fp16*       C = (__fp16*)C_u;
     const int64_t TM = 4, TN = 4;
 
-    /* Tail-handling falls back to scalar for the rows / cols not covered by
-     * the 4x4 tiling. Cheap enough for the small remainders Kokoro produces. */
     int64_t Mt = M & ~(TM - 1);
     int64_t Nt = N & ~(TN - 1);
 
     for (int64_t m = 0; m < Mt; m += TM) {
         for (int64_t n = 0; n < Nt; n += TN) {
-            float32x4_t acc[TM];
-            for (int i = 0; i < TM; ++i) acc[i] = vdupq_n_f32(0.0f);
+            float32x4_t acc0 = vdupq_n_f32(0.0f);
+            float32x4_t acc1 = vdupq_n_f32(0.0f);
+            float32x4_t acc2 = vdupq_n_f32(0.0f);
+            float32x4_t acc3 = vdupq_n_f32(0.0f);
 
-            int64_t k = 0;
-            for (; k + 7 < K; k += 8) {
-                /* Load 4 rows of A, 8 K elements each. */
-                float16x8_t a0 = vld1q_f16((const __fp16*)&A[(m + 0) * K + k]);
-                float16x8_t a1 = vld1q_f16((const __fp16*)&A[(m + 1) * K + k]);
-                float16x8_t a2 = vld1q_f16((const __fp16*)&A[(m + 2) * K + k]);
-                float16x8_t a3 = vld1q_f16((const __fp16*)&A[(m + 3) * K + k]);
+            for (int64_t k = 0; k < K; ++k) {
+                /* B row slice — 4 contiguous fp16 → fp32 vector. */
+                float16x4_t b_h = vld1_f16(&B[k * N + n]);
+                float32x4_t b_row = vcvt_f32_f16(b_h);
 
-                /* For each column n+0..n+3, gather B[k..k+7][n+j]. */
-                for (int j = 0; j < TN; ++j) {
-                    booki_f16 b_scratch[8];
-                    for (int kk = 0; kk < 8; ++kk) {
-                        b_scratch[kk] = B[(k + kk) * N + (n + j)];
-                    }
-                    float16x8_t bv = vld1q_f16((const __fp16*)b_scratch);
-
-                    /* Widening fp16 dot via two fp16-mul + fp32-accumulate */
-                    float32x4_t lo0 = vcvt_f32_f16(vget_low_f16 (vmulq_f16(a0, bv)));
-                    float32x4_t hi0 = vcvt_f32_f16(vget_high_f16(vmulq_f16(a0, bv)));
-                    float32x4_t lo1 = vcvt_f32_f16(vget_low_f16 (vmulq_f16(a1, bv)));
-                    float32x4_t hi1 = vcvt_f32_f16(vget_high_f16(vmulq_f16(a1, bv)));
-                    float32x4_t lo2 = vcvt_f32_f16(vget_low_f16 (vmulq_f16(a2, bv)));
-                    float32x4_t hi2 = vcvt_f32_f16(vget_high_f16(vmulq_f16(a2, bv)));
-                    float32x4_t lo3 = vcvt_f32_f16(vget_low_f16 (vmulq_f16(a3, bv)));
-                    float32x4_t hi3 = vcvt_f32_f16(vget_high_f16(vmulq_f16(a3, bv)));
-
-                    float32x4_t sum0 = vaddq_f32(lo0, hi0);
-                    float32x4_t sum1 = vaddq_f32(lo1, hi1);
-                    float32x4_t sum2 = vaddq_f32(lo2, hi2);
-                    float32x4_t sum3 = vaddq_f32(lo3, hi3);
-
-                    float r0 = vaddvq_f32(sum0);
-                    float r1 = vaddvq_f32(sum1);
-                    float r2 = vaddvq_f32(sum2);
-                    float r3 = vaddvq_f32(sum3);
-
-                    acc[0] = vsetq_lane_f32(vgetq_lane_f32(acc[0], j) + r0, acc[0], j);
-                    acc[1] = vsetq_lane_f32(vgetq_lane_f32(acc[1], j) + r1, acc[1], j);
-                    acc[2] = vsetq_lane_f32(vgetq_lane_f32(acc[2], j) + r2, acc[2], j);
-                    acc[3] = vsetq_lane_f32(vgetq_lane_f32(acc[3], j) + r3, acc[3], j);
-                }
-            }
-            /* K-tail */
-            for (; k < K; ++k) {
-                float a_vals[TM] = {
-                    (float)A[(m + 0) * K + k],
-                    (float)A[(m + 1) * K + k],
-                    (float)A[(m + 2) * K + k],
-                    (float)A[(m + 3) * K + k],
+                /* A column slice (4 elements gathered from M-strided rows). */
+                __fp16 a_col_h[4] = {
+                    A[(m + 0) * K + k],
+                    A[(m + 1) * K + k],
+                    A[(m + 2) * K + k],
+                    A[(m + 3) * K + k],
                 };
-                for (int j = 0; j < TN; ++j) {
-                    float b = (float)B[k * N + (n + j)];
-                    for (int i = 0; i < TM; ++i) {
-                        float old = vgetq_lane_f32(acc[i], j);
-                        acc[i] = vsetq_lane_f32(old + a_vals[i] * b, acc[i], j);
-                    }
-                }
+                float32x4_t a_col = vcvt_f32_f16(vld1_f16(a_col_h));
+
+                /* Outer product. Lane indices must be constant. */
+                acc0 = vfmaq_laneq_f32(acc0, b_row, a_col, 0);
+                acc1 = vfmaq_laneq_f32(acc1, b_row, a_col, 1);
+                acc2 = vfmaq_laneq_f32(acc2, b_row, a_col, 2);
+                acc3 = vfmaq_laneq_f32(acc3, b_row, a_col, 3);
             }
-            /* Store tile, downcasting to fp16. */
-            for (int i = 0; i < TM; ++i) {
-                float16x4_t r = vcvt_f16_f32(acc[i]);
-                vst1_f16((__fp16*)&C[(m + i) * N + n], r);
-            }
+
+            /* Store tile, downcasting back to fp16. */
+            vst1_f16(&C[(m + 0) * N + n], vcvt_f16_f32(acc0));
+            vst1_f16(&C[(m + 1) * N + n], vcvt_f16_f32(acc1));
+            vst1_f16(&C[(m + 2) * N + n], vcvt_f16_f32(acc2));
+            vst1_f16(&C[(m + 3) * N + n], vcvt_f16_f32(acc3));
         }
 
-        /* N-tail (cols Nt .. N-1) */
+        /* N-tail (cols Nt..N-1) */
         for (int64_t n = Nt; n < N; ++n) {
             for (int64_t i = 0; i < TM; ++i) {
-                float acc1 = 0.0f;
+                float acc = 0.0f;
                 for (int64_t k = 0; k < K; ++k)
-                    acc1 += (float)A[(m + i) * K + k] * (float)B[k * N + n];
-                C[(m + i) * N + n] = (__fp16)acc1;
+                    acc += (float)A[(m + i) * K + k] * (float)B[k * N + n];
+                C[(m + i) * N + n] = (__fp16)acc;
             }
         }
     }
 
-    /* M-tail (rows Mt .. M-1) — scalar */
+    /* M-tail (rows Mt..M-1) */
     for (int64_t m = Mt; m < M; ++m) {
         for (int64_t n = 0; n < N; ++n) {
-            float acc1 = 0.0f;
+            float acc = 0.0f;
             for (int64_t k = 0; k < K; ++k)
-                acc1 += (float)A[m * K + k] * (float)B[k * N + n];
-            C[m * N + n] = (__fp16)acc1;
+                acc += (float)A[m * K + k] * (float)B[k * N + n];
+            C[m * N + n] = (__fp16)acc;
         }
     }
 }
