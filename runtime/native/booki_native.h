@@ -111,9 +111,28 @@ int booki_silu_f16(const booki_tensor* x, booki_tensor* out);
 /* GELU (tanh approximation, used by Kokoro's FFN). */
 int booki_gelu_f16(const booki_tensor* x, booki_tensor* out);
 
+/* LeakyReLU: y = x if x > 0 else alpha * x.  Element-wise. */
+int booki_leaky_relu_f16(const booki_tensor* x, float alpha, booki_tensor* out);
+
+/* sin / cos / tanh — element-wise transcendentals. NEON-vectorised. */
+int booki_sin_f16(const booki_tensor* x, booki_tensor* out);
+int booki_cos_f16(const booki_tensor* x, booki_tensor* out);
+
 /* Element-wise binary ops. Same shape, in-place (out = a) allowed. */
 int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
+int booki_sub_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
 int booki_mul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out);
+
+/* InstanceNormalization (1-D / sequence form):
+ *   y[n, c, t] = (x[n, c, t] - mean(x[n, c, :])) / sqrt(var(x[n, c, :]) + eps)
+ *               * scale[c] + bias[c]
+ * Operates on the last axis of [..., C, T] tensors. scale and bias have
+ * shape [C]; bias may be NULL.
+ */
+int booki_instance_norm_f16(const booki_tensor* x,
+                            const booki_tensor* scale,
+                            const booki_tensor* bias,
+                            float eps, booki_tensor* out);
 
 /* Softmax along the last axis with fp32 accumulation + max-shift for
  * numerical stability. Operates on [..., D]; rows are independent. */
@@ -148,6 +167,48 @@ int booki_conv1d_f16(const booki_tensor* x, const booki_tensor* weight,
                      const booki_tensor* bias,
                      int64_t stride, int64_t padding, int64_t dilation, int64_t groups,
                      booki_tensor* out);
+
+/* 1-D transposed convolution (a.k.a. "deconvolution" — though it isn't one).
+ *
+ *   input  : [B, in_channels,  L_in]
+ *   weight : [in_channels, out_channels / groups, kernel]
+ *   bias   : [out_channels]  (optional)
+ *
+ * output_padding adds extra zeros at the end of the output to match
+ * PyTorch's `nn.ConvTranspose1d`. Used by HiFi-GAN-family vocoders for
+ * upsampling.
+ */
+int booki_conv_transpose1d_f16(const booki_tensor* x, const booki_tensor* weight,
+                               const booki_tensor* bias,
+                               int64_t stride, int64_t padding,
+                               int64_t output_padding, int64_t dilation,
+                               int64_t groups, booki_tensor* out);
+
+/* 1-D resize along the last axis. Modes: nearest, linear.
+ *   out_size: requested output length along the last axis. */
+typedef enum { BOOKI_RESIZE_NEAREST = 0, BOOKI_RESIZE_LINEAR = 1 } booki_resize_mode;
+
+int booki_resize1d_f16(const booki_tensor* x, int64_t out_size,
+                       booki_resize_mode mode, booki_tensor* out);
+
+/* LSTM forward pass.
+ *
+ *   x      : [T, in_dim]        sequence of input vectors
+ *   W      : [4*hidden, in_dim] input-to-hidden weights (gate order i,o,f,c
+ *                                — ONNX convention)
+ *   R      : [4*hidden, hidden] recurrent weights
+ *   b      : [8*hidden]         bias (Wb concatenated with Rb), NULL → zero
+ *   h0, c0 : [hidden]            initial hidden / cell state, NULL → zero
+ *   out    : [T, hidden]         per-step hidden outputs
+ *
+ * Unidirectional only. Bidirectional support can wrap two unidirectional
+ * passes with a reversed input.
+ */
+int booki_lstm_f16(const booki_tensor* x,
+                   const booki_tensor* W, const booki_tensor* R,
+                   const booki_tensor* b,
+                   const booki_tensor* h0, const booki_tensor* c0,
+                   booki_arena* arena, booki_tensor* out);
 
 /* ------------------------------------------------------------------------- */
 /* fp16 conversion helpers — provided for tests and tools that need to

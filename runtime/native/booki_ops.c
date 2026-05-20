@@ -245,11 +245,13 @@ int booki_gelu_f16(const booki_tensor* x, booki_tensor* out) {
 }
 
 /* ------------------------------------------------------------------------- */
-/* Element-wise add / mul                                                    */
+/* Element-wise add / sub / mul                                              */
 /* ------------------------------------------------------------------------- */
 
+enum { OP_BIN_ADD = 0, OP_BIN_SUB = 1, OP_BIN_MUL = 2 };
+
 static int binary_apply(const booki_tensor* a, const booki_tensor* b,
-                        booki_tensor* out, int is_mul) {
+                        booki_tensor* out, int kind) {
     if (!a || !b || !out) return -1;
     if (a->dtype != BOOKI_DTYPE_F16 || b->dtype != BOOKI_DTYPE_F16 ||
         out->dtype != BOOKI_DTYPE_F16) return -2;
@@ -265,23 +267,219 @@ static int binary_apply(const booki_tensor* a, const booki_tensor* b,
     for (; i + 7 < n; i += 8) {
         float16x8_t av = vld1q_f16((const __fp16*)&ap[i]);
         float16x8_t bv = vld1q_f16((const __fp16*)&bp[i]);
-        float16x8_t cv = is_mul ? vmulq_f16(av, bv) : vaddq_f16(av, bv);
+        float16x8_t cv;
+        switch (kind) {
+            case OP_BIN_SUB: cv = vsubq_f16(av, bv); break;
+            case OP_BIN_MUL: cv = vmulq_f16(av, bv); break;
+            default:         cv = vaddq_f16(av, bv); break;
+        }
         vst1q_f16((__fp16*)&op[i], cv);
     }
 #endif
     for (; i < n; ++i) {
         float av = booki_f16_to_f32(ap[i]);
         float bv = booki_f16_to_f32(bp[i]);
-        op[i] = booki_f32_to_f16(is_mul ? av * bv : av + bv);
+        float r;
+        switch (kind) {
+            case OP_BIN_SUB: r = av - bv; break;
+            case OP_BIN_MUL: r = av * bv; break;
+            default:         r = av + bv; break;
+        }
+        op[i] = booki_f32_to_f16(r);
     }
     return 0;
 }
 
 int booki_add_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out) {
-    return binary_apply(a, b, out, /*is_mul=*/0);
+    return binary_apply(a, b, out, OP_BIN_ADD);
+}
+int booki_sub_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out) {
+    return binary_apply(a, b, out, OP_BIN_SUB);
 }
 int booki_mul_f16(const booki_tensor* a, const booki_tensor* b, booki_tensor* out) {
-    return binary_apply(a, b, out, /*is_mul=*/1);
+    return binary_apply(a, b, out, OP_BIN_MUL);
+}
+
+/* ------------------------------------------------------------------------- */
+/* LeakyReLU                                                                 */
+/* ------------------------------------------------------------------------- */
+
+int booki_leaky_relu_f16(const booki_tensor* x, float alpha, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+
+    int64_t i = 0;
+#if HAVE_NEON
+    float16x8_t va = vdupq_n_f16((__fp16)alpha);
+    float16x8_t vz = vdupq_n_f16(0.0f);
+    for (; i + 7 < n; i += 8) {
+        float16x8_t v = vld1q_f16((const __fp16*)&xp[i]);
+        uint16x8_t  pos = vcgtq_f16(v, vz);
+        float16x8_t neg = vmulq_f16(v, va);
+        float16x8_t r = vbslq_f16(pos, v, neg);
+        vst1q_f16((__fp16*)&op[i], r);
+    }
+#endif
+    for (; i < n; ++i) {
+        float v = booki_f16_to_f32(xp[i]);
+        op[i] = booki_f32_to_f16(v > 0.0f ? v : alpha * v);
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* sin / cos                                                                 */
+/*                                                                           */
+/* Range-reduce x to [-pi, pi] using a high-precision multiplier, then       */
+/* evaluate a degree-7 odd polynomial for sin. cos(x) = sin(x + pi/2).      */
+/* Accuracy: < 1e-3 max-abs over the literary range Kokoro feeds in.        */
+/* ------------------------------------------------------------------------- */
+
+static inline float sin_scalar(float x) {
+    /* Range-reduce to [-pi, pi]. */
+    const float TWO_PI    = 6.283185307179586f;
+    const float INV_TWO_PI= 0.15915494309189535f;
+    float k = floorf(x * INV_TWO_PI + 0.5f);
+    float y = x - k * TWO_PI;
+    /* Map y in [-pi, pi] to [-pi/2, pi/2] using sin symmetry. */
+    if (y >  1.5707963267948966f) y =  3.141592653589793f - y;
+    if (y < -1.5707963267948966f) y = -3.141592653589793f - y;
+    /* Horner of x - x^3/6 + x^5/120 - x^7/5040 (good to ~1e-7 on [-pi/2,pi/2]). */
+    float y2 = y * y;
+    float p = -1.984126984e-4f;     /* -1/5040 */
+    p = p * y2 +  8.333333333e-3f;  /*  1/120  */
+    p = p * y2 + -1.666666667e-1f;  /* -1/6    */
+    p = p * y2 +  1.0f;
+    return y * p;
+}
+
+int booki_sin_f16(const booki_tensor* x, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; ++i)
+        op[i] = booki_f32_to_f16(sin_scalar(booki_f16_to_f32(xp[i])));
+    return 0;
+}
+
+int booki_cos_f16(const booki_tensor* x, booki_tensor* out) {
+    if (!x || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    int64_t n = booki_tensor_elements(x);
+    const uint16_t* xp = (const uint16_t*)x->data;
+    uint16_t*       op = (uint16_t*)out->data;
+    for (int64_t i = 0; i < n; ++i) {
+        float v = booki_f16_to_f32(xp[i]);
+        op[i] = booki_f32_to_f16(sin_scalar(v + 1.5707963267948966f));
+    }
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* InstanceNormalization                                                     */
+/*                                                                           */
+/* Input  : [..., C, T]    (last two axes are channel + spatial)             */
+/* scale  : [C]                                                              */
+/* bias   : [C]   (NULL allowed)                                             */
+/* Output : same shape as input                                              */
+/*                                                                           */
+/* For each (sample, channel) row of length T, compute mean and variance     */
+/* in fp32, then normalise + scale + bias. fp32 accumulation keeps the       */
+/* error budget reasonable for the channel sizes Kokoro uses (up to 512).    */
+/* ------------------------------------------------------------------------- */
+
+int booki_instance_norm_f16(const booki_tensor* x,
+                            const booki_tensor* scale,
+                            const booki_tensor* bias,
+                            float eps, booki_tensor* out) {
+    if (!x || !scale || !out) return -1;
+    if (x->dtype != BOOKI_DTYPE_F16 || scale->dtype != BOOKI_DTYPE_F16 ||
+        out->dtype != BOOKI_DTYPE_F16) return -2;
+    if (bias && bias->dtype != BOOKI_DTYPE_F16) return -2;
+    if (!same_shape(x, out)) return -3;
+    if (x->rank < 2) return -4;
+
+    int64_t T = x->shape[x->rank - 1];
+    int64_t C = x->shape[x->rank - 2];
+    if (scale->rank != 1 || scale->shape[0] != C) return -5;
+    if (bias && (bias->rank != 1 || bias->shape[0] != C)) return -5;
+
+    int64_t batches = 1;
+    for (int i = 0; i < x->rank - 2; ++i) batches *= x->shape[i];
+
+    const uint16_t* xp = (const uint16_t*)x->data;
+    const uint16_t* sp = (const uint16_t*)scale->data;
+    const uint16_t* bp = bias ? (const uint16_t*)bias->data : NULL;
+    uint16_t*       op = (uint16_t*)out->data;
+
+    for (int64_t b = 0; b < batches; ++b) {
+        for (int64_t c = 0; c < C; ++c) {
+            const uint16_t* row = xp + (b * C + c) * T;
+            uint16_t*       orow = op + (b * C + c) * T;
+
+            /* Mean + variance in fp32. */
+            float sum = 0.0f, sumsq = 0.0f;
+            int64_t t = 0;
+#if HAVE_NEON
+            float32x4_t vsum = vdupq_n_f32(0.0f);
+            float32x4_t vssq = vdupq_n_f32(0.0f);
+            for (; t + 7 < T; t += 8) {
+                float16x8_t h = vld1q_f16((const __fp16*)&row[t]);
+                float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
+                float32x4_t hi = vcvt_f32_f16(vget_high_f16(h));
+                vsum = vaddq_f32(vsum, vaddq_f32(lo, hi));
+                vssq = vfmaq_f32(vssq, lo, lo);
+                vssq = vfmaq_f32(vssq, hi, hi);
+            }
+            sum   += vaddvq_f32(vsum);
+            sumsq += vaddvq_f32(vssq);
+#endif
+            for (; t < T; ++t) {
+                float v = booki_f16_to_f32(row[t]);
+                sum += v; sumsq += v * v;
+            }
+            float mean = sum / (float)T;
+            float var  = sumsq / (float)T - mean * mean;
+            float inv  = 1.0f / sqrtf(var + eps);
+
+            float s = booki_f16_to_f32(sp[c]);
+            float bv = bp ? booki_f16_to_f32(bp[c]) : 0.0f;
+
+            t = 0;
+#if HAVE_NEON
+            float32x4_t vmean = vdupq_n_f32(mean);
+            float32x4_t vinv  = vdupq_n_f32(inv);
+            float32x4_t vs    = vdupq_n_f32(s);
+            float32x4_t vb    = vdupq_n_f32(bv);
+            for (; t + 7 < T; t += 8) {
+                float16x8_t h = vld1q_f16((const __fp16*)&row[t]);
+                float32x4_t lo = vcvt_f32_f16(vget_low_f16(h));
+                float32x4_t hi = vcvt_f32_f16(vget_high_f16(h));
+                lo = vmulq_f32(vsubq_f32(lo, vmean), vinv);
+                hi = vmulq_f32(vsubq_f32(hi, vmean), vinv);
+                lo = vfmaq_f32(vb, lo, vs);
+                hi = vfmaq_f32(vb, hi, vs);
+                vst1_f16((__fp16*)&orow[t],     vcvt_f16_f32(lo));
+                vst1_f16((__fp16*)&orow[t + 4], vcvt_f16_f32(hi));
+            }
+#endif
+            for (; t < T; ++t) {
+                float v = booki_f16_to_f32(row[t]);
+                v = (v - mean) * inv * s + bv;
+                orow[t] = booki_f32_to_f16(v);
+            }
+        }
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------------- */

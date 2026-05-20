@@ -106,6 +106,8 @@ set(BOOKI_NATIVE_SOURCES
     native/booki_matmul.c
     native/booki_ops.c
     native/booki_conv1d.c
+    native/booki_conv_transpose1d.c
+    native/booki_lstm.c
     native/booki_gguf.c
     native/booki_graph.c)
 
@@ -186,3 +188,15 @@ add_test(NAME gguf COMMAND test_gguf)
 add_executable(test_graph native/tests/test_graph.c)
 target_link_libraries(test_graph PRIVATE booki_native m)
 add_test(NAME graph COMMAND test_graph)
+
+add_executable(test_ops_extra native/tests/test_ops_extra.c)
+target_link_libraries(test_ops_extra PRIVATE booki_native m)
+add_test(NAME ops_extra COMMAND test_ops_extra)
+
+add_executable(test_conv_transpose1d native/tests/test_conv_transpose1d.c)
+target_link_libraries(test_conv_transpose1d PRIVATE booki_native m)
+add_test(NAME conv_transpose1d COMMAND test_conv_transpose1d)
+
+add_executable(test_lstm native/tests/test_lstm.c)
+target_link_libraries(test_lstm PRIVATE booki_native m)
+add_test(NAME lstm COMMAND test_lstm)
