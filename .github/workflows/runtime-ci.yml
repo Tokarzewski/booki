@@ -115,7 +115,7 @@ jobs:
             --report build/eval-report.json
           jq '.summary' build/eval-report.json
 
-      - name: Micro-benchmarks
+      - name: Micro-benchmarks (ORT baseline)
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
         run: |
@@ -124,11 +124,20 @@ jobs:
             --iters 5 --tokens 128 --json > build/bench.json
           jq '.' build/bench.json
 
+      - name: Micro-benchmarks (native runtime)
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
+        run: |
+          ./build/booki_bench_native --iters 5 --json > build/bench-native.json
+          jq '.' build/bench-native.json
+
       - name: Upload bench JSON
         uses: actions/upload-artifact@v4
         with:
           name: bench-arm64-linux
-          path: runtime/build/bench.json
+          path: |
+            runtime/build/bench.json
+            runtime/build/bench-native.json
 
       - name: Regression gate (vs baseline on main)
         if: github.event_name == 'pull_request'

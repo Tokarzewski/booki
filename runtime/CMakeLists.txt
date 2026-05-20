@@ -94,9 +94,38 @@ add_executable(booki_eval tools/booki_eval.c)
 target_link_libraries(booki_eval PRIVATE booki_runtime m)
 
 # -----------------------------------------------------------------------------
-# Tests (smoke checks; real op-level tests land with #13)
+# Native (hand-rolled) runtime — see runtime/native/ and issue #13.
+#
+# Built as a separate library so the ORT baseline and the native engine can
+# coexist while op coverage is incomplete. Both feed runtime-ci.yml's bench
+# regression gate.
+# -----------------------------------------------------------------------------
+add_library(booki_native SHARED
+    native/booki_tensor.c
+    native/booki_matmul.c)
+target_include_directories(booki_native PUBLIC native)
+target_compile_options(booki_native PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    # A64 has fp16 + dot-product extensions; enable them for the NEON path.
+    target_compile_options(booki_native PRIVATE -march=armv8.2-a+fp16+dotprod)
+endif()
+
+add_executable(booki_bench_native tools/booki_bench_native.c)
+target_link_libraries(booki_bench_native PRIVATE booki_native)
+
+# -----------------------------------------------------------------------------
+# Tests
 # -----------------------------------------------------------------------------
 enable_testing()
 add_executable(test_smoke tests/test_smoke.c)
 target_link_libraries(test_smoke PRIVATE booki_runtime)
 add_test(NAME smoke COMMAND test_smoke)
+
+add_executable(test_arena native/tests/test_arena.c)
+target_link_libraries(test_arena PRIVATE booki_native)
+add_test(NAME arena COMMAND test_arena)
+
+add_executable(test_matmul native/tests/test_matmul.c)
+target_link_libraries(test_matmul PRIVATE booki_native m)
+add_test(NAME matmul COMMAND test_matmul)
