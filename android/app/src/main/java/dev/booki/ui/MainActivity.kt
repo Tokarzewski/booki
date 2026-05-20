@@ -21,12 +21,16 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.booki.data.AudioLibrary
 import dev.booki.data.Library
+import dev.booki.data.Settings
+import dev.booki.data.Settings.defaultSpeed
+import dev.booki.data.Settings.defaultVoice
 import dev.booki.data.Voices
 import dev.booki.player.PlayerController
 import dev.booki.tts.ModelDownloader
@@ -45,13 +49,14 @@ private sealed interface Screen {
     data object Home : Screen
     data object Catalog : Screen
     data object Player : Screen
+    data object Settings : Screen
     data class Picker(val uri: Uri, val voice: String, val speed: Float, val streamLive: Boolean) : Screen
 }
 
 @Composable
 private fun Root() {
     val context = LocalContextSafe.current
-    var provisioned by remember { mutableStateOf(ModelDownloader.isProvisioned(context)) }
+    var provisioned by remember { mutableStateOf(ModelDownloader.anyProvisioned(context)) }
     var screen: Screen by remember { mutableStateOf(Screen.Home) }
 
     LaunchedEffect(Unit) {
@@ -73,6 +78,7 @@ private fun Root() {
         Screen.Home -> BookiApp(
             onOpenCatalog = { screen = Screen.Catalog },
             onOpenPlayer = { screen = Screen.Player },
+            onOpenSettings = { screen = Screen.Settings },
             onOpenPicker = { uri, voice, speed, streamLive ->
                 screen = Screen.Picker(uri, voice, speed, streamLive)
             },
@@ -81,6 +87,7 @@ private fun Root() {
             Library.refresh(context); screen = Screen.Home
         })
         Screen.Player -> PlayerScreen(onBack = { screen = Screen.Home })
+        Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Home })
         is Screen.Picker -> ChapterPickerScreen(
             epubUri = s.uri,
             onCancel = { screen = Screen.Home },
@@ -104,14 +111,15 @@ private fun Root() {
 fun BookiApp(
     onOpenCatalog: () -> Unit,
     onOpenPlayer: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenPicker: (Uri, voice: String, speed: Float, streamLive: Boolean) -> Unit,
 ) {
     val context = LocalContextSafe.current
     var epubUri by remember { mutableStateOf<Uri?>(null) }
     var epubLabel by remember { mutableStateOf<String?>(null) }
-    var voice by remember { mutableStateOf(Voices.DEFAULT) }
+    var voice by remember { mutableStateOf(with(Settings) { context.defaultVoice }) }
     var voiceFilter by remember { mutableStateOf("") }
-    var speed by remember { mutableFloatStateOf(1f) }
+    var speed by remember { mutableFloatStateOf(with(Settings) { context.defaultSpeed }) }
     var streamLive by remember { mutableStateOf(true) }
     var voiceMenu by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Library.Book?>(null) }
@@ -151,6 +159,9 @@ fun BookiApp(
                     }
                     IconButton(onClick = onOpenCatalog) {
                         Icon(Icons.Default.Public, contentDescription = "Catalog")
+                    }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
             )

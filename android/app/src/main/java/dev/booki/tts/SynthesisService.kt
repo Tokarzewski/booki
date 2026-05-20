@@ -15,6 +15,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.IntentCompat
 import dev.booki.audio.AudioPreview
 import dev.booki.audio.M4aMuxer
+import dev.booki.data.Settings
+import dev.booki.data.Settings.quality
 import dev.booki.epub.EpubReader
 import dev.booki.epub.TextSplitter
 import kotlinx.coroutines.*
@@ -87,7 +89,10 @@ class SynthesisService : Service() {
         val outDir = File(filesDir, "out").apply { mkdirs() }
         val outFile = File(outDir, "${book.title.sanitize()}.m4a")
 
-        KokoroEngine.load(this@SynthesisService).use { engine ->
+        val factory = Engines.factoryFor(quality)?.takeIf { it.isProvisioned(this@SynthesisService) }
+            ?: KokoroEngine.Fp32Factory.takeIf { it.isProvisioned(this@SynthesisService) }
+            ?: KokoroEngine.Int8Factory
+        factory.load(this@SynthesisService).use { engine ->
             val preview = if (streamLive) AudioPreview(engine.sampleRate) else null
             try {
                 M4aMuxer(outFile, sampleRate = engine.sampleRate).use { muxer ->

@@ -1,0 +1,43 @@
+package dev.booki.tts
+
+import android.content.Context
+
+/**
+ * Pluggable TTS backend. Each implementation owns its native runtime, its
+ * model files, and its voice catalog. The [SynthesisService] depends only on
+ * this interface so the engine can be swapped at runtime from settings.
+ */
+interface SpeechEngine : AutoCloseable {
+    val name: String
+    val sampleRate: Int
+
+    /** Synthesize one chunk of plain text into PCM float samples in [-1, 1]. */
+    fun synthesize(text: String, voiceId: String, speed: Float = 1f): FloatArray
+
+    /** Whether this engine ships voices grouped by language code (a/b/e/f/...). */
+    val supportsMultilingual: Boolean get() = true
+
+    interface Factory {
+        val id: Quality
+        val displayName: String
+        val downloadSizeMb: Int
+        val ramMb: Int
+        fun isProvisioned(context: Context): Boolean
+        fun load(context: Context): SpeechEngine
+    }
+
+    enum class Quality { KOKORO_INT8, KOKORO_FP32, ORPHEUS_INT4 }
+}
+
+object Engines {
+    val factories: List<SpeechEngine.Factory> by lazy {
+        listOf(
+            KokoroEngine.Int8Factory,
+            KokoroEngine.Fp32Factory,
+            // OrpheusEngine.Factory comes online in v0.5
+        )
+    }
+
+    fun factoryFor(quality: SpeechEngine.Quality): SpeechEngine.Factory? =
+        factories.firstOrNull { it.id == quality }
+}

@@ -41,8 +41,8 @@ android {
         applicationId = "dev.booki"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         // Modern phones are arm64-v8a; dropping armeabi-v7a saves ~22 MB.
         ndk { abiFilters += setOf("arm64-v8a") }
         // Only ship English resources (Compose/AndroidX bundle ~70 locales).

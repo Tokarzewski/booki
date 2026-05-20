@@ -11,49 +11,50 @@ import java.net.HttpURLConnection
 import java.net.URI
 
 /**
- * Fetches and unpacks the sherpa-onnx Kokoro bundle (a `.tar.bz2` containing
- * the model, voices, tokens, lexicons and espeak-ng-data) into
- * `filesDir/kokoro/` on first launch.
+ * Downloads sherpa-onnx Kokoro bundles to `filesDir/kokoro/{variant}/`.
  *
- * Default is the v1.1 multilingual fp32 build (~348 MB compressed, ~640 MB
- * unpacked). Pass [Quality.INT8] for a ~140 MB / ~310 MB unpacked variant
- * that runs ~3× faster on weak SoCs with a small quality penalty.
+ * Each [Variant] is independent — a user can keep both installed and switch
+ * between them in settings without re-downloading. Bundles are `.tar.bz2`
+ * archives hosted on the sherpa-onnx GitHub release `tts-models` tag.
  */
 object ModelDownloader {
 
-    enum class Quality(val tarName: String) {
-        FP32("kokoro-multi-lang-v1_1"),
-        INT8("kokoro-int8-multi-lang-v1_1"),
+    enum class Variant(val subdir: String, val tarName: String, val sizeMb: Int) {
+        FP32("fp32", "kokoro-multi-lang-v1_1", 348),
+        INT8("int8", "kokoro-int8-multi-lang-v1_1", 140),
     }
 
     private const val BASE =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models"
 
-    /** Files we expect to find inside the extracted bundle. */
-    private val REQUIRED_FILES = listOf("model.onnx", "voices.bin", "tokens.txt")
-
-    fun isProvisioned(context: Context): Boolean {
-        val dir = File(context.filesDir, "kokoro")
-        return REQUIRED_FILES.all { File(dir, it).exists() } &&
+    fun isProvisioned(context: Context, variant: Variant): Boolean {
+        val dir = File(context.filesDir, "kokoro/${variant.subdir}")
+        return File(dir, "model.onnx").exists() &&
+            File(dir, "voices.bin").exists() &&
+            File(dir, "tokens.txt").exists() &&
             File(dir, "espeak-ng-data").isDirectory
     }
 
+    /** True if either variant is fully provisioned — caller can pick one to load. */
+    fun anyProvisioned(context: Context): Boolean = Variant.entries.any { isProvisioned(context, it) }
+
     suspend fun download(
         context: Context,
-        quality: Quality = Quality.FP32,
+        variant: Variant,
         onProgress: (stage: String, done: Long, total: Long) -> Unit,
     ) = withContext(Dispatchers.IO) {
-        val dir = File(context.filesDir, "kokoro").apply { mkdirs() }
-        val url = "$BASE/${quality.tarName}.tar.bz2"
-        val tmp = File(context.cacheDir, "${quality.tarName}.tar.bz2.part")
-        val tarball = File(context.cacheDir, "${quality.tarName}.tar.bz2")
+        val outDir = File(context.filesDir, "kokoro/${variant.subdir}").apply { mkdirs() }
+        val cacheDir = context.cacheDir
+        val url = "$BASE/${variant.tarName}.tar.bz2"
+        val tarball = File(cacheDir, "${variant.tarName}.tar.bz2")
+        val tmp = File(cacheDir, "${variant.tarName}.tar.bz2.part")
 
         if (!tarball.exists()) {
             val conn = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 120_000
                 instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Booki/0.3 (+https://github.com/Tokarzewski/booki)")
+                setRequestProperty("User-Agent", "Booki/0.4 (+https://github.com/Tokarzewski/booki)")
             }
             check(conn.responseCode in 200..299) {
                 "Download failed: HTTP ${conn.responseCode} for $url"
@@ -67,28 +68,34 @@ object ModelDownloader {
                     while (input.read(buf).also { read = it } != -1) {
                         output.write(buf, 0, read)
                         done += read
-                        onProgress("Downloading", done, total)
+                        onProgress("Downloading ${variant.subdir}", done, total)
                     }
                 }
             }
             check(tmp.renameTo(tarball)) { "Failed to finalize $tarball" }
         }
 
-        onProgress("Extracting", 0, tarball.length())
+        onProgress("Extracting ${variant.subdir}", 0, tarball.length())
         tarball.inputStream().buffered().use { raw ->
             BZip2CompressorInputStream(raw).use { bz2 ->
                 TarArchiveInputStream(bz2).use { tar ->
-                    extract(tar, dir, onProgress)
+                    extract(tar, outDir) { bytes -> onProgress("Extracting ${variant.subdir}", bytes, -1L) }
                 }
             }
         }
         tarball.delete()
     }
 
+    /** Removes a downloaded variant from disk. */
+    fun remove(context: Context, variant: Variant) {
+        val dir = File(context.filesDir, "kokoro/${variant.subdir}")
+        if (dir.exists()) dir.deleteRecursively()
+    }
+
     private fun extract(
         tar: TarArchiveInputStream,
         outDir: File,
-        onProgress: (stage: String, done: Long, total: Long) -> Unit,
+        onChunk: (Long) -> Unit,
     ) {
         var bytes = 0L
         while (true) {
@@ -105,7 +112,7 @@ object ModelDownloader {
                 continue
             }
             target.parentFile?.mkdirs()
-            target.outputStream().use { copy(tar, it) { n -> bytes += n; onProgress("Extracting $rel", bytes, -1L) } }
+            target.outputStream().use { copy(tar, it) { n -> bytes += n; onChunk(bytes) } }
         }
     }
 
