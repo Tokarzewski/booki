@@ -135,10 +135,7 @@ int booki_has_sme(void) {
 booki_backend booki_backend_active(void) {
     if (g_backend != BOOKI_BACKEND_AUTO) return g_backend;
 #if defined(__aarch64__)
-    /* SME backend is built and probed but not yet on the default path —
-     * the FMOPA-based kernel still has a layout bug being chased.  Opt
-     * in explicitly with booki_set_backend(BOOKI_BACKEND_SME) until the
-     * test_matmul cases pass on real hardware. */
+    if (booki_has_sme()) return BOOKI_BACKEND_SME;
     return BOOKI_BACKEND_NEON;
 #elif defined(__ARM_NEON)
     return BOOKI_BACKEND_NEON;

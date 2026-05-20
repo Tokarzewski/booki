@@ -143,6 +143,47 @@ static int error_paths_test(booki_arena* a) {
     return 0;
 }
 
+static int sme_smoke(booki_arena* a) {
+    /* Smoke-check the SME backend against the scalar oracle when available. */
+    if (!booki_has_sme()) {
+        printf("(SME not available — skipping)\n");
+        return 0;
+    }
+    const int64_t M = 5, K = 6, N = 7;
+    int64_t elemsA = M * K, elemsB = K * N;
+    float* abuf = (float*)malloc(sizeof(float) * elemsA);
+    float* bbuf = (float*)malloc(sizeof(float) * elemsB);
+    for (int64_t i = 0; i < elemsA; ++i) abuf[i] = ((i * 7 + 1) % 9) * 0.1f - 0.4f;
+    for (int64_t i = 0; i < elemsB; ++i) bbuf[i] = ((i * 5 + 3) % 11) * 0.1f - 0.5f;
+
+    booki_tensor A = mk(a, M, K); fill_from(&A, abuf, elemsA);
+    booki_tensor B = mk(a, K, N); fill_from(&B, bbuf, elemsB);
+    booki_tensor Cs = mk(a, M, N); memset(Cs.data, 0, Cs.nbytes);
+    booki_tensor Cm = mk(a, M, N); memset(Cm.data, 0, Cm.nbytes);
+
+    booki_set_backend(BOOKI_BACKEND_SCALAR);
+    int rc = booki_matmul_f16(&A, &B, &Cs);
+    CHECK(rc == 0, "scalar matmul rc=%d", rc);
+
+    booki_set_backend(BOOKI_BACKEND_SME);
+    rc = booki_matmul_f16(&A, &B, &Cm);
+    CHECK(rc == 0, "sme matmul rc=%d", rc);
+
+    booki_set_backend(BOOKI_BACKEND_AUTO);
+
+    fp16* sp = (fp16*)Cs.data;
+    fp16* mp = (fp16*)Cm.data;
+    float worst = 0;
+    for (int64_t i = 0; i < M * N; ++i) {
+        float d = fabsf(f16_to_f32_(sp[i]) - f16_to_f32_(mp[i]));
+        if (d > worst) worst = d;
+    }
+    CHECK(worst < 1e-1f, "sme/scalar disagree by %.4f", worst);
+
+    free(abuf); free(bbuf);
+    return 0;
+}
+
 int main(void) {
     booki_arena* a = booki_arena_create(1 << 20);
     CHECK(a != NULL, "arena create");
@@ -153,10 +194,12 @@ int main(void) {
 #if defined(__ARM_NEON) || defined(__aarch64__)
     rc |= backends_agree_test(a); booki_arena_reset(a);
 #endif
-    rc |= error_paths_test(a);
+    rc |= error_paths_test(a);  booki_arena_reset(a);
+    rc |= sme_smoke(a);
 
     booki_arena_destroy(a);
-    if (rc == 0) printf("matmul ok (backend: %s)\n",
-                        booki_backend_describe(booki_backend_active()));
+    if (rc == 0) printf("matmul ok (backend: %s, sme=%d)\n",
+                        booki_backend_describe(booki_backend_active()),
+                        booki_has_sme());
     return rc;
 }
