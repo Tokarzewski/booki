@@ -154,6 +154,35 @@ float    booki_f16_to_f32(uint16_t h);
 uint16_t booki_f32_to_f16(float f);
 
 /* ------------------------------------------------------------------------- */
+/* Model loader (GGUF v3)                                                    */
+/*                                                                           */
+/* GGUF is a flat binary container designed for fast mmap-style loading      */
+/* of LLM weights. The loader gives us a name -> [booki_tensor] view into    */
+/* the file's data without copying. Used as the on-disk format for Booki    */
+/* models (converted offline from .onnx / .pt). Spec:                       */
+/* https://github.com/ggml-org/ggml/blob/master/docs/gguf.md                 */
+/* ------------------------------------------------------------------------- */
+
+typedef struct booki_model booki_model;
+
+booki_model* booki_model_open(const char* path, char* err_out, size_t err_cap);
+void         booki_model_close(booki_model* m);
+
+/* Returns the count of tensors in the model. */
+int booki_model_tensor_count(const booki_model* m);
+
+/* Returns 0 + populates *out on success, non-zero on missing name or dtype
+ * mismatch. The returned tensor's data pointer is owned by [m] and remains
+ * valid until booki_model_close. */
+int booki_model_tensor(const booki_model* m, const char* name, booki_tensor* out);
+
+/* Returns the i-th tensor's name (interned in [m]), or NULL if out of range. */
+const char* booki_model_tensor_name(const booki_model* m, int i);
+
+/* Returns a metadata string (e.g. "general.architecture") or NULL. */
+const char* booki_model_meta_string(const booki_model* m, const char* key);
+
+/* ------------------------------------------------------------------------- */
 /* Version                                                                   */
 /* ------------------------------------------------------------------------- */
 

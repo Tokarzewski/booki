@@ -104,7 +104,8 @@ add_library(booki_native SHARED
     native/booki_tensor.c
     native/booki_matmul.c
     native/booki_ops.c
-    native/booki_conv1d.c)
+    native/booki_conv1d.c
+    native/booki_gguf.c)
 target_include_directories(booki_native PUBLIC native)
 target_link_libraries(booki_native PUBLIC m)
 target_compile_options(booki_native PRIVATE -Wall -Wextra -Wno-unused-parameter -O3)
@@ -147,3 +148,7 @@ add_test(NAME conv1d COMMAND test_conv1d)
 add_executable(test_mha native/tests/test_mha.c)
 target_link_libraries(test_mha PRIVATE booki_native m)
 add_test(NAME mha COMMAND test_mha)
+
+add_executable(test_gguf native/tests/test_gguf.c)
+target_link_libraries(test_gguf PRIVATE booki_native m)
+add_test(NAME gguf COMMAND test_gguf)
