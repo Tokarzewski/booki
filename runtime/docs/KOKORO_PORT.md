@@ -111,6 +111,54 @@ After all six: an end-to-end Kokoro forward pass running on the native
 runtime. Performance optimization (NEON for the new ops, blocked matmul
 tiling, multi-thread) is the next arc beyond.
 
+## Current state (live)
+
+Running `tools/onnx_to_booki.py --check-only` against the
+`kokoro-multi-lang-v1_1` FP32 bundle currently reports:
+
+```
+UNSUPPORTED ops:
+  SplitToSequence    2
+  SequenceEmpty      1
+  Loop               1
+  ConcatFromSequence 1
+(5 invocations)
+
+folded ops:   3291 invocations across 30 kinds
+emitted nodes: 2191
+```
+
+The 5 remaining invocations form one logical pattern — Kokoro's
+frame-expansion loop in the duration predictor:
+
+  1. `SequenceEmpty` — start an empty list of tensors
+  2. `SplitToSequence` (×2) — split inputs into per-frame chunks
+  3. `Loop` — fold the chunks into the empty sequence, applying
+     the duration model per frame
+  4. `ConcatFromSequence` — concatenate the accumulated frames into
+     the final output tensor
+
+Two ways to dispatch this:
+
+**Option A — Runtime sequence type + Loop dispatch.** Genuine ML
+runtime work. Add `booki_sequence` (variable-length list of tensors),
+implement Loop with bounded iteration over a body subgraph, plumb
+through closures from the outer scope. Estimated 2–3 sessions of
+careful implementation + device validation.
+
+**Option B — Pattern fusion in the converter.** Detect the specific
+SplitToSequence → Loop → ConcatFromSequence pattern that Kokoro uses
+and emit a single fused op the runtime can dispatch as a regular
+kernel. This is what `tools/onnx_to_booki.py`'s `looks_like_kokoro_if`
+pattern does for the If branches. Estimated 1 session of careful
+ONNX subgraph analysis + a new `booki_frame_expand` kernel.
+
+Option B is the pragmatic call — Kokoro's Loop body is a fixed shape
+that the converter can introspect, and the equivalent fused
+computation is straightforward (it's essentially per-frame matmul +
+embedding lookup). Option A is the future-proof call when we add a
+second model that uses Loop differently.
+
 ## Open questions
 
 - **InstanceNorm or LayerNorm?** Kokoro's text-encoder layers use

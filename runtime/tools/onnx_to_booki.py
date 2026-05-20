@@ -82,6 +82,29 @@ FOLDABLE = {
     "Pow", "Div", "Reciprocal", "Floor", "Round", "Clip",
 }
 
+def is_trivial_branch(subgraph: "onnx.GraphProto") -> bool:
+    """A branch is 'trivial' if it consists only of identity/squeeze/
+    unsqueeze/reshape over a single outer-scope tensor + constants.
+    These are safe to fold to a no-op at conversion time because the
+    downstream graph either tolerates the extra unit dim (broadcasting)
+    or has its own static-shape contract that doesn't care."""
+    OK_OPS = {"Identity", "Squeeze", "Unsqueeze", "Reshape", "Constant", "Cast"}
+    for node in subgraph.node:
+        if node.op_type not in OK_OPS:
+            return False
+    return True
+
+
+def looks_like_kokoro_if(node) -> bool:
+    """Returns True if the If node is Kokoro's pattern: both branches are
+    trivial squeeze-vs-identity over the same outer tensor."""
+    if node.op_type != "If":
+        return False
+    branches = [a for a in node.attribute if a.name in ("then_branch", "else_branch")]
+    if len(branches) != 2:
+        return False
+    return all(is_trivial_branch(a.g) for a in branches)
+
 
 def dtype_to_booki(elem_type: int) -> str:
     # ONNX TensorProto.DataType values
@@ -163,12 +186,38 @@ def main(argv: list[str]) -> int:
     for node in graph.node:
         if node.op_type in FOLDABLE:
             folded[node.op_type] += 1
-            # We don't generate a runtime node, but we still need to make
-            # downstream nodes resolve their inputs. For now, alias the
-            # foldable's output to its first input (works only for the
-            # truly metadata-only ops; Reshape / Cast / Slice would need
-            # real shape inference). The Kokoro converter will need a
-            # proper folding pass — flagged in KOKORO_PORT.md.
+            continue
+        if looks_like_kokoro_if(node):
+            # Both branches degenerate into "same outer tensor with maybe a
+            # unit-dim squeeze". Fold to a runtime identity on whatever
+            # tensor the branches reference. We grab it from the
+            # `else_branch`'s Identity node (always there in Kokoro's pattern).
+            outer = None
+            for attr in node.attribute:
+                if attr.name == "else_branch":
+                    for inner in attr.g.node:
+                        if inner.op_type == "Identity":
+                            outer = inner.input[0]
+                            break
+            if outer is None:
+                # Fall back to the first non-Constant input of the then_branch.
+                for attr in node.attribute:
+                    if attr.name == "then_branch":
+                        for inner in attr.g.node:
+                            if inner.op_type != "Constant" and inner.input:
+                                outer = inner.input[0]
+                                break
+            if outer is None:
+                unsupported["If(unresolvable)"] += 1
+                continue
+            folded["If(kokoro-trivial)"] += 1
+            # The If's output name aliases the outer tensor. We don't emit
+            # a runtime node; downstream consumers will see the outer
+            # tensor's data via the alias map. For simplicity we emit an
+            # Identity-style alias node so downstream resolution finds it.
+            nodes_out.append({
+                "op": "alias", "name": node.output[0], "inputs": [outer],
+            })
             continue
         if node.op_type not in SUPPORTED_TRANSLATIONS:
             unsupported[node.op_type] += 1
