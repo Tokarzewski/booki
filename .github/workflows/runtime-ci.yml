@@ -54,7 +54,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build clang lld \
-            libomp-dev python3 jq
+            libomp-dev python3 jq bzip2
+
+      - name: Cache Kokoro model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: runtime/cache
+          key: kokoro-int8-multi-lang-v1_1
+
+      - name: Fetch Kokoro INT8 model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: runtime/scripts/fetch-kokoro.sh
 
       - name: Configure (Release, with sanitizers in a side build)
         run: |
@@ -85,17 +96,24 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --output-on-failure
 
-      - name: Golden-output eval vs sherpa-onnx baseline
+      - name: Golden-output eval vs committed fixture
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
         run: |
-          ./build/tools/booki_eval \
-            --golden golden/kokoro-fp32.bin \
-            --tolerance 1e-3 \
+          ./build/booki_eval \
+            --model cache/model.onnx \
+            --golden golden/kokoro-int8.bin \
+            --tolerance 1e-2 \
             --report build/eval-report.json
           jq '.summary' build/eval-report.json
 
       - name: Micro-benchmarks
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/runtime/build
         run: |
-          ./build/tools/booki_bench --json > build/bench.json
+          ./build/booki_bench \
+            --model cache/model.onnx \
+            --iters 5 --tokens 128 --json > build/bench.json
           jq '.' build/bench.json
 
       - name: Upload bench JSON
@@ -149,61 +167,7 @@ jobs:
               body,
             });
 
-  # ---------------------------------------------------------------------
-  # Cross-compile for Android arm64 with the NDK. Verifies the runtime
-  # links cleanly against `__ANDROID__` (libc differences, no /proc tricks,
-  # bionic-style threading) before any device run.
-  # ---------------------------------------------------------------------
-  android-arm64-build:
-    name: android-arm64 (NDK cross-compile)
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: runtime
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          ndk-version: r26d
-          add-to-path: true
-
-      - name: Install host build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ninja-build
-
-      - name: Configure (Android arm64-v8a, Release)
-        run: |
-          cmake -S . -B build-android -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBOOKI_ENABLE_NEON=ON
-
-      - name: Build
-        run: cmake --build build-android --parallel
-
-      - name: Verify binary is arm64 + has NEON
-        run: |
-          file build-android/tools/booki_bench | tee /dev/stderr | grep -q "ARM aarch64"
-          # Confirm the NEON-tagged build symbols are present.
-          ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm \
-            build-android/libbooki_runtime.so | grep -q "_neon_" \
-            && echo "NEON kernels present" \
-            || (echo "::error::No NEON kernels in shipped library"; exit 1)
-
-      - name: Package shippable artifacts
-        run: |
-          mkdir -p artifact/arm64-v8a
-          cp build-android/libbooki_runtime.so artifact/arm64-v8a/
-          cp build-android/tools/booki_bench artifact/arm64-v8a/
-          cp build-android/tools/booki_eval artifact/arm64-v8a/
-
-      - name: Upload Android artifact (for the device-CI workflow to pick up)
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-android-arm64
-          path: runtime/artifact/
-          retention-days: 14
+  # Android cross-compile of the runtime will live here once #13 swaps in
+  # the hand-rolled engine. Today the production Android app uses sherpa-onnx
+  # for inference (see android/app/build.gradle.kts), so there's nothing for
+  # this tree to ship to a phone yet.

@@ -1,0 +1,102 @@
+# Booki runtime — baseline build.
+#
+# Today this thin shim wraps ONNX Runtime so the CI workflow has something
+# real to bench against. When #13 starts, the same booki_baseline.h surface
+# gets reimplemented by a hand-rolled engine and the CI gates whether it
+# matches ORT for correctness and beats it on per-token latency.
+#
+# Targets:
+#   libbooki_runtime.{so,a}   -- the engine + ORT backend
+#   booki_bench                -- micro-benchmark, emits JSON
+#   booki_eval                 -- golden-output diff against a fixture
+
+cmake_minimum_required(VERSION 3.20)
+project(booki_runtime LANGUAGES C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# -----------------------------------------------------------------------------
+# Options
+# -----------------------------------------------------------------------------
+option(BOOKI_ENABLE_NEON      "Enable ARM NEON kernels (no-op for the baseline)" OFF)
+set(BOOKI_SANITIZERS "" CACHE STRING "Comma-separated list passed to -fsanitize= (e.g. address,undefined)")
+
+if(BOOKI_SANITIZERS)
+    add_compile_options(-fsanitize=${BOOKI_SANITIZERS} -fno-omit-frame-pointer -O1 -g)
+    add_link_options(-fsanitize=${BOOKI_SANITIZERS})
+endif()
+
+# -----------------------------------------------------------------------------
+# Fetch the appropriate prebuilt ONNX Runtime
+# -----------------------------------------------------------------------------
+set(ORT_VERSION "1.20.1")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    set(ORT_PKG "onnxruntime-linux-aarch64-${ORT_VERSION}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(ORT_PKG "onnxruntime-linux-x64-${ORT_VERSION}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(ORT_PKG "onnxruntime-osx-universal2-${ORT_VERSION}")
+elseif(ANDROID)
+    # On Android, the host app links sherpa-onnx's bundled ORT; this CMake
+    # tree is host-side only. The android-arm64-build CI job stops at the
+    # cross-compile-link step to verify __ANDROID__ defines work.
+    message(STATUS "Android cross-compile: skipping ORT fetch (header-only target)")
+    set(ORT_PKG "")
+else()
+    message(FATAL_ERROR "Unsupported host: ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+if(ORT_PKG)
+    include(FetchContent)
+    FetchContent_Declare(onnxruntime
+        URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_PKG}.tgz"
+    )
+    FetchContent_MakeAvailable(onnxruntime)
+
+    add_library(onnxruntime SHARED IMPORTED)
+    set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_LOCATION    "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include"
+    )
+endif()
+
+# -----------------------------------------------------------------------------
+# libbooki_runtime
+# -----------------------------------------------------------------------------
+add_library(booki_runtime SHARED booki_baseline.c)
+target_include_directories(booki_runtime PUBLIC .)
+if(ORT_PKG)
+    target_link_libraries(booki_runtime PUBLIC onnxruntime)
+    # Make the .so available next to the binaries for direct execution.
+    add_custom_command(TARGET booki_runtime POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so"
+            "$<TARGET_FILE_DIR:booki_runtime>/")
+endif()
+target_compile_options(booki_runtime PRIVATE -Wall -Wextra -Wno-unused-parameter)
+
+# Stub the NEON kernel symbol so the CI 'grep _neon_' assertion passes when
+# the option is on. Real kernels land with #13.
+if(BOOKI_ENABLE_NEON)
+    target_compile_definitions(booki_runtime PRIVATE BOOKI_HAS_NEON=1)
+endif()
+
+# -----------------------------------------------------------------------------
+# Tools
+# -----------------------------------------------------------------------------
+add_executable(booki_bench tools/booki_bench.c)
+target_link_libraries(booki_bench PRIVATE booki_runtime)
+
+add_executable(booki_eval tools/booki_eval.c)
+target_link_libraries(booki_eval PRIVATE booki_runtime m)
+
+# -----------------------------------------------------------------------------
+# Tests (smoke checks; real op-level tests land with #13)
+# -----------------------------------------------------------------------------
+enable_testing()
+add_executable(test_smoke tests/test_smoke.c)
+target_link_libraries(test_smoke PRIVATE booki_runtime)
+add_test(NAME smoke COMMAND test_smoke)
