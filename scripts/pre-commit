@@ -80,3 +80,4 @@ else
     echo "═══ Some checks failed ✗ — commit blocked ═══"
     exit 1
 fi
+# Pre-commit hook — runs all tests before publishing
