@@ -1,3 +1,5 @@
+@file:Suppress("UnsafeOptInUsageError")
+
 package dev.booki.ui
 
 import android.content.Intent
@@ -132,6 +134,7 @@ fun BookiApp(
     val library by Library.books.collectAsState()
     val audiobooks by AudioLibrary.items.collectAsState()
 
+    @Suppress("UnsafeOptInUsageError")
     LaunchedEffect(Unit) { PlayerController.connect(context) }
 
     val pickEpub = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->

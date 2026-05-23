@@ -1,5 +1,6 @@
 package dev.booki.tts
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -101,6 +102,7 @@ class CloudTtsEngine(
     // Audio decoding
     // -----------------------------------------------------------------------
 
+    @SuppressLint("MissingPermission")
     private fun decodeAudio(raw: ByteArray): FloatArray {
         // ElevenLabs PCM output is already 24 kHz 16-bit PCM LE.
         if (provider == CloudSettings.Provider.ELEVENLABS) {
@@ -155,7 +157,7 @@ class CloudTtsEngine(
                         val buf = codec.getInputBuffer(inIdx)!!
                         buf.clear()
                         val toRead = minOf(buf.remaining(), 65536)
-                        val available = extractor.sampleSize.toInt().coerceAtMost(toRead)
+                        @Suppress("NewApi") val available = extractor.sampleSize.toInt().coerceAtMost(toRead)
                         buf.put(mp3, 0, available)
                         val flags = if (available == 0) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
                         codec.queueInputBuffer(inIdx, 0, available, 0L, flags)
@@ -170,7 +172,7 @@ class CloudTtsEngine(
                     outBuf.position(bufferInfo.offset)
                     outBuf.limit(bufferInfo.offset + bufferInfo.size)
                     val pcm = ByteArray(bufferInfo.size)
-                    outBuf.get(pcm)
+                    @Suppress("NewApi") outBuf.get(pcm)
                     outSamples.addAll(pcm16ToF32List(pcm))
                     codec.releaseOutputBuffer(outIdx, false)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {

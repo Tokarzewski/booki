@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -17,6 +18,7 @@ import dev.booki.ui.MainActivity
  * Wired from the UI by binding a [androidx.media3.session.MediaController] to
  * this service's [androidx.media3.session.SessionToken].
  */
+@UnstableApi
 class PlayerService : MediaSessionService() {
 
     private lateinit var player: ExoPlayer

@@ -1,3 +1,5 @@
+@file:Suppress("UnsafeOptInUsageError")
+
 package dev.booki.ui
 
 import androidx.compose.foundation.layout.*
