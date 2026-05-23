@@ -43,7 +43,25 @@ else
 fi
 
 # ─────────────────────────────────────────────
-# 2. Runtime C tests
+# 2. Android lint checks
+# ─────────────────────────────────────────────
+echo ""
+echo "── Android lint checks ──"
+if [ -n "$GRADLEW" ]; then
+    cd "$ANDROID_DIR"
+    if $GRADLEW lintDebug --quiet 2>&1; then
+        echo "  ✓ Lint checks passed"
+    else
+        echo "  ✗ Lint checks FAILED"
+        FAILED=1
+    fi
+    cd "$REPO_ROOT"
+else
+    echo "  SKIP: no gradlew"
+fi
+
+# ─────────────────────────────────────────────
+# 3. Runtime C tests
 # ─────────────────────────────────────────────
 echo ""
 echo "── Runtime C tests ──"
