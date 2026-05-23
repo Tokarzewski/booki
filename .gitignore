@@ -17,4 +17,53 @@ android/build/
 android/app/build/
 android/app/libs/*.aar
 android/captures/
-.claude/
+
+# Gradle wrapper (optional: uncomment if using project-provided wrapper)
+# android/gradle/wrapper/
+
+# Gradle cache
+.gradle/
+build/
+
+# Kotlin/Native and Compose compiler caches
+.kotlin/
+compose-cache/
+
+# Kotlin corresponding files (generated from Java interoperability)
+*kotlin_metadata*
+*kotlin_builtins
+
+# Android Studio logs and configuration
+*.log
+.idea/inspectionProfiles/
+.idea/deploymentTargetSelector.xml
+.idea/assetWizardSettings.xml
+.idea/gradle.xml
+
+# ProGuard mapping files (generated at build time)
+outputs/
+mapping.txt
+seeds.txt
+usage.txt
+resources.txt
+classes.txt
+dump.txt
+source.txt
+
+# Test coverage reports
+coverage/
+*.exec
+*.ec
+
+# Detekt + Ktlint caches
+.detekt/
+.ktlint/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Runtime artifacts (if applicable)
+runtime/*.log
+runtime/**/sandbox/
