@@ -1,0 +1,87 @@
+Snapshot of `runtime/tools/inspect_onnx.py` output for the sherpa-onnx
+kokoro-int8-multi-lang-v1_1 bundle. Regenerate by running:
+
+  ~/.booki-venv/bin/python runtime/tools/inspect_onnx.py runtime/cache/model.onnx
+
+==============================================================================
+
+Model: /home/bart/Github/booki/runtime/cache/model.onnx
+Producer: onnx.quantize v0.1.0
+IR version: 7, opset(s): [14, 1]
+
+Inputs:
+  tokens                                    7  [1, sequence_length]
+  style                                     1  [1, 256]
+  speed                                     1  [1]
+Outputs:
+  audio                                     1  [audio_length]
+  onnx::Shape_3623                          7  [Squeezeonnx::Shape_3623_dim_0]
+
+Initializers: 908, total bytes: 107.4 MB
+Graph nodes: 5895
+
+ count  op                              status
+------------------------------------------------------------------------------
+  1452  Constant                        OK  (fold in converter, no kernel needed)
+   808  Mul                             OK  booki_graph_mul
+   679  Add                             OK  booki_graph_add
+   288  Shape                           OK  (fold in converter, no kernel needed)
+   251  Cast                            OK  (fold in converter, no kernel needed)
+   237  Gather                          OK  booki_graph_embedding
+   234  Reshape                         OK  (fold in converter, no kernel needed)
+   194  Identity                        OK  (fold in converter, no kernel needed)
+   182  Slice                           OK  (fold in converter, no kernel needed)
+   168  Unsqueeze                       OK  (fold in converter, no kernel needed)
+   123  Div                             OK  (fold in converter, no kernel needed)
+   107  Transpose                       OK  (fold in converter, no kernel needed)
+    98  DynamicQuantizeLinear           MISSING
+    93  Pow                             OK  (fold in converter, no kernel needed)
+    92  MatMul                          OK  booki_graph_matmul
+    91  Concat                          OK  (fold in converter, no kernel needed)
+    90  ConvInteger                     MISSING
+    83  MatMulInteger                   MISSING
+    70  InstanceNormalization           MISSING
+    68  Sqrt                            OK  (fold in converter, no kernel needed)
+    62  ReduceMean                      OK  (fold in converter, no kernel needed)
+    51  Sin                             MISSING
+    48  Reciprocal                      MISSING
+    45  ConstantOfShape                 MISSING
+    38  Where                           OK  (fold in converter, no kernel needed)
+    36  Sub                             MISSING
+    31  Expand                          OK  (fold in converter, no kernel needed)
+    28  Equal                           OK  (fold in converter, no kernel needed)
+    28  LeakyRelu                       MISSING
+    22  Range                           OK  (fold in converter, no kernel needed)
+    13  Tanh                            OK  compose / NEON poly
+    12  Softmax                         OK  booki_graph_softmax
+     7  ScatterND                       MISSING
+     7  ConvTranspose                   MISSING
+     6  DynamicQuantizeLSTM             MISSING
+     6  Resize                          MISSING
+     4  DequantizeLinear                MISSING
+     4  TopK                            MISSING
+     4  ReduceProd                      MISSING
+     4  ScatterElements                 MISSING
+     3  Greater                         OK  (fold in converter, no kernel needed)
+     3  Squeeze                         OK  (fold in converter, no kernel needed)
+     2  SplitToSequence                 MISSING
+     2  If                              MISSING
+     2  Pad                             MISSING
+     2  Less                            OK  (fold in converter, no kernel needed)
+     1  SequenceEmpty                   MISSING
+     1  ReduceMax                       MISSING
+     1  Loop                            MISSING
+     1  ConcatFromSequence              MISSING
+     1  Not                             OK  (fold in converter, no kernel needed)
+     1  Sigmoid                         OK  compose: x * sigmoid(x)
+     1  ReduceSum                       OK  (fold in converter, no kernel needed)
+     1  Round                           MISSING
+     1  Clip                            MISSING
+     1  Floor                           MISSING
+     1  RandomUniformLike               MISSING
+     1  CumSum                          MISSING
+     1  RandomNormalLike                MISSING
+     1  And                             MISSING
+     1  Atan                            MISSING
+     1  Exp                             MISSING
+     1  Cos                             MISSING

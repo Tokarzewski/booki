@@ -1,0 +1,20 @@
+# Upstream reference clone — not vendored into this repo
+/audiblez/
+
+# Signing keystores — must never be committed
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Local Android config
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/app/libs/*.aar
+android/captures/
+.claude/

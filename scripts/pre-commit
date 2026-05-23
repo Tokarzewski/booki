@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# Booki pre-commit hook — blocks commits that break tests.
+#
+# Runs:
+#   1. Android unit tests  (gradlew :app:testDebugUnitTest)
+#   2. Runtime C tests     (cmake build + ctest)
+#
+# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ANDROID_DIR="$REPO_ROOT/android"
+RUNTIME_DIR="$REPO_ROOT/runtime"
+FAILED=0
+
+echo "═══ Booki Pre-Commit Checks ═══"
+
+# ─────────────────────────────────────────────
+# 1. Android unit tests
+# ─────────────────────────────────────────────
+echo ""
+echo "── Android unit tests ──"
+GRADLEW=""
+if [ -f "$ANDROID_DIR/gradlew" ]; then
+    GRADLEW="$ANDROID_DIR/gradlew"
+elif command -v gradlew &>/dev/null; then
+    GRADLEW=gradlew
+fi
+
+if [ -n "$GRADLEW" ]; then
+    cd "$ANDROID_DIR"
+    if $GRADLEW :app:testDebugUnitTest --quiet 2>&1; then
+        echo "  ✓ Android tests passed"
+    else
+        echo "  ✗ Android tests FAILED"
+        FAILED=1
+    fi
+    cd "$REPO_ROOT"
+else
+    echo "  SKIP: no gradlew"
+fi
+
+# ─────────────────────────────────────────────
+# 2. Runtime C tests
+# ─────────────────────────────────────────────
+echo ""
+echo "── Runtime C tests ──"
+if command -v cmake &>/dev/null && command -v ctest &>/dev/null; then
+    cd "$RUNTIME_DIR"
+
+    # Build if needed
+    if [ ! -f build/CTestTestfile.cmake ]; then
+        echo "  Configuring CMake..."
+        cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=Release >/dev/null 2>&1
+    fi
+
+    cmake --build build --quiet 2>/dev/null || true
+
+    if LD_LIBRARY_PATH=build ctest --test-dir build --output-on-failure --quiet 2>&1; then
+        echo "  ✓ Runtime tests passed"
+    else
+        echo "  ✗ Runtime tests FAILED"
+        FAILED=1
+    fi
+    cd "$REPO_ROOT"
+else
+    echo "  SKIP: cmake or ctest not installed"
+fi
+
+# ─────────────────────────────────────────────
+# Result
+# ─────────────────────────────────────────────
+echo ""
+if [ "$FAILED" -eq 0 ]; then
+    echo "═══ All checks passed ✓ ═══"
+    exit 0
+else
+    echo "═══ Some checks failed ✗ — commit blocked ═══"
+    exit 1
+fi
