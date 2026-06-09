@@ -10,12 +10,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.booki.audio.SfxMixer
 import dev.booki.data.Settings
 import dev.booki.data.Settings.defaultSpeed
 import dev.booki.data.Settings.defaultVoice
 import dev.booki.data.Settings.quality
+import dev.booki.data.Settings.sfxEnabled
+import dev.booki.data.Settings.sfxIntensityDb
 import dev.booki.data.Voices
 import dev.booki.runtime.NativeBootstrap
+import dev.booki.sfx.MossSfxEngine
 import dev.booki.tts.CloudSettings
 import dev.booki.tts.CloudSettings.Provider
 import dev.booki.tts.CloudSettings.cloudApiKey
@@ -136,6 +140,12 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             HorizontalDivider()
 
+            // Generative SFX (Issue #8) — engine ships later; settings + gate now.
+            Text("Generative SFX", style = MaterialTheme.typography.titleMedium)
+            GenerativeSfxSection()
+
+            HorizontalDivider()
+
             Text("Default voice", style = MaterialTheme.typography.titleMedium)
             ExposedDropdownMenuBox(expanded = voiceMenu, onExpandedChange = { voiceMenu = !voiceMenu }) {
                 OutlinedTextField(
@@ -241,6 +251,64 @@ private fun NativeRuntimeSection(snackbar: SnackbarHostState) {
             Spacer(Modifier.height(4.dp))
             LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
         }
+    }
+}
+
+/**
+ * Issue #8: per-chapter ambient beds + section stings generated on device.
+ * The MOSS-TTS engine is not shipped yet (blocked on the llama.cpp runtime,
+ * issues #6/#7), so the toggle is disabled until [MossSfxEngine.Factory]
+ * reports provisioned; the device gate (arm64 + ≥8 GB RAM) applies already.
+ */
+@Composable
+private fun GenerativeSfxSection() {
+    val context = LocalContextSafe.current
+    var enabled by remember { mutableStateOf(context.sfxEnabled) }
+    var intensityDb by remember { mutableFloatStateOf(context.sfxIntensityDb) }
+    val supported = remember { MossSfxEngine.Factory.isSupportedOn(context) }
+    val available = supported && MossSfxEngine.Factory.isProvisioned(context)
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Switch(
+            checked = enabled && available,
+            enabled = available,
+            onCheckedChange = {
+                enabled = it
+                with(Settings) { context.sfxEnabled = it }
+            },
+        )
+        Column {
+            Text("Ambient beds + section stings", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                when {
+                    !supported ->
+                        "Not supported on this device (needs arm64 and ≥8 GB RAM)"
+                    !available ->
+                        "Coming soon — tracked in issue #8 · ${MossSfxEngine.Factory.downloadSizeMb} MB download"
+                    else -> "Novel ambience generated per chapter, never identical twice"
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+
+    Column {
+        Text(
+            "Intensity: ${"%.0f".format(intensityDb)} dB under narration",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Slider(
+            value = intensityDb,
+            enabled = available && enabled,
+            onValueChange = {
+                intensityDb = it
+                with(Settings) { context.sfxIntensityDb = it }
+            },
+            valueRange = SfxMixer.MIN_AMBIENT_GAIN_DB..SfxMixer.MAX_AMBIENT_GAIN_DB,
+        )
     }
 }
 
