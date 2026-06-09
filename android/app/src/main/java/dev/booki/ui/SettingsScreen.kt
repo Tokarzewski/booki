@@ -15,6 +15,7 @@ import dev.booki.data.Settings.defaultSpeed
 import dev.booki.data.Settings.defaultVoice
 import dev.booki.data.Settings.quality
 import dev.booki.data.Voices
+import dev.booki.runtime.NativeBootstrap
 import dev.booki.tts.CloudSettings
 import dev.booki.tts.CloudSettings.Provider
 import dev.booki.tts.CloudSettings.cloudApiKey
@@ -119,6 +120,14 @@ fun SettingsScreen(onBack: () -> Unit) {
                 )
             }
 
+            if (NativeBootstrap.isDynamic) {
+                HorizontalDivider()
+
+                // Dynamic native runtime status + repair (Issue #7)
+                Text("Native runtime", style = MaterialTheme.typography.titleMedium)
+                NativeRuntimeSection(snackbar)
+            }
+
             HorizontalDivider()
 
             // Cloud TTS configuration (Issue #9)
@@ -170,6 +179,67 @@ fun SettingsScreen(onBack: () -> Unit) {
                     valueRange = 0.5f..2f,
                 )
             }
+        }
+    }
+}
+
+/**
+ * Issue #7: shown only in dynamic-native-lib builds. Reports the active
+ * runtime version + on-disk size and offers "Repair runtime" — the recovery
+ * path for a corrupted .so (which would otherwise crash synthesis).
+ */
+@Composable
+private fun NativeRuntimeSection(snackbar: SnackbarHostState) {
+    val context = LocalContextSafe.current
+    val scope = rememberCoroutineScope()
+    var installed by remember { mutableStateOf(NativeBootstrap.isInstalled(context)) }
+    var busy by remember { mutableStateOf(false) }
+    var stage by remember { mutableStateOf<String?>(null) }
+    var frac by remember { mutableFloatStateOf(0f) }
+    val manifest = NativeBootstrap.manifest
+
+    ListItem(
+        headlineContent = { Text("${manifest.runtime} ${manifest.version} (${manifest.abi})") },
+        supportingContent = {
+            Text(
+                if (installed) {
+                    "Installed · ${NativeBootstrap.installedSizeBytes(context) / 1_048_576} MB on disk"
+                } else {
+                    "Not installed — synthesis unavailable until repaired"
+                },
+            )
+        },
+        trailingContent = {
+            TextButton(
+                enabled = !busy,
+                onClick = {
+                    busy = true
+                    scope.launch {
+                        NativeBootstrap.repair(context)
+                        installed = false
+                        runCatching {
+                            NativeBootstrap.install(context) { s, done, total ->
+                                stage = s
+                                frac = if (total > 0) done.toFloat() / total else 0f
+                            }
+                        }.onSuccess {
+                            installed = NativeBootstrap.isInstalled(context)
+                            snackbar.showSnackbar("Native runtime reinstalled")
+                        }.onFailure {
+                            snackbar.showSnackbar("Repair failed: ${it.message}")
+                        }
+                        stage = null
+                        busy = false
+                    }
+                },
+            ) { Text("Repair runtime") }
+        },
+    )
+    stage?.let { s ->
+        Column {
+            Text(s, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(progress = { frac }, modifier = Modifier.fillMaxWidth())
         }
     }
 }

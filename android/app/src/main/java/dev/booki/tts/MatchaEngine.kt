@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsMatchaModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import dev.booki.data.Voices
+import dev.booki.runtime.NativeBootstrap
 import java.io.File
 
 /**
@@ -62,6 +63,9 @@ class MatchaEngine private constructor(
                 File(dir, "tokens.txt").exists()
 
         private fun build(context: Context, variant: String, name: String): MatchaEngine {
+            // Issue #7: in dynamic builds the sherpa-onnx .so files live in
+            // filesDir and must be loaded before any sherpa class initializes.
+            NativeBootstrap.ensureLoaded(context)
             val dir = bundleDir(context, variant)
             check(isComplete(dir)) { "Matcha/$variant bundle incomplete. Re-run setup." }
 

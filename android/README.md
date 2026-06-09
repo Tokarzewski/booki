@@ -48,6 +48,44 @@ audio/M4aMuxer         MediaCodec AAC encoder + MP4 muxer
 audio/WavWriter        per-chapter PCM dump (optional)
 ```
 
+## Dynamic native libraries (issue #7)
+
+By default the APK bundles the sherpa-onnx + ONNX Runtime `.so` files
+(~57 MB debug APK). An opt-in build flag strips them and downloads them on
+first launch instead (~22 MB debug APK, −35 MB):
+
+```bash
+./gradlew :app:assembleRelease -Pbooki.dynamicNativeLibs=true
+```
+
+How it works (`runtime/NativeBootstrap`):
+
+1. SetupScreen downloads the official sherpa-onnx release AAR (the exact same
+   artifact the build compiles against) before the voice model.
+2. The arm64-v8a `.so` files are extracted to `filesDir/native/arm64-v8a/` and
+   each is verified against a sha256 hard-coded in `NativeLibManifest.CURRENT`.
+   A hash mismatch aborts the install — a tampered or truncated download is
+   never `System.load`ed.
+3. Before the first sherpa-onnx class is touched, the directory is registered
+   on the app ClassLoader (`runtime/NativeDirInjector`) and the libs are loaded
+   in dependency order.
+
+Trade-offs — why this is **not** the default build:
+
+- **First install needs network.** The standard APK works fully offline after
+  side-loading; the dynamic one must download ~54 MB before first synthesis
+  (in addition to the voice model it already downloads).
+- **F-Droid would reject it.** Downloading executable code at runtime violates
+  F-Droid inclusion policy. We ship via Obtainium/GitHub Releases, where this
+  is acceptable, but keep it opt-in regardless.
+- **New failure mode: corrupted runtime.** If the on-disk `.so` files are
+  damaged the app refuses to load them; Settings → "Native runtime" →
+  "Repair runtime" wipes and re-downloads the bundle.
+
+The flag becomes worth flipping on by default the moment a second native
+runtime ships (llama.cpp for Orpheus — issue #6), at which point users only
+download the runtime for the engine they actually enable.
+
 ## Known gaps before shipping
 
 - **Phonemization.** The bundled tokenizer is a per-character fallback. Real

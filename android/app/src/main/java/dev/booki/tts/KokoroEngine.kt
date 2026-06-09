@@ -6,6 +6,7 @@ import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import dev.booki.data.Voices
+import dev.booki.runtime.NativeBootstrap
 import java.io.File
 
 /**
@@ -62,6 +63,9 @@ class KokoroEngine private constructor(
                 File(dir, "espeak-ng-data").isDirectory
 
         private fun build(context: Context, variant: String, name: String): KokoroEngine {
+            // Issue #7: in dynamic builds the sherpa-onnx .so files live in
+            // filesDir and must be loaded before any sherpa class initializes.
+            NativeBootstrap.ensureLoaded(context)
             val dir = bundleDir(context, variant)
             check(isComplete(dir)) { "Kokoro/$variant bundle incomplete. Re-run setup." }
 

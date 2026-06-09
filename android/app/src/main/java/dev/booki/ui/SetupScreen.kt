@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.booki.data.Settings
 import dev.booki.data.Settings.quality
+import dev.booki.runtime.NativeBootstrap
 import dev.booki.tts.Engines
 import dev.booki.tts.ModelDownloader
 import dev.booki.tts.SpeechEngine
@@ -65,6 +66,11 @@ fun SetupScreen(onProvisioned: () -> Unit) {
                     state = DownloadState.Running("preparing…", 0, 0)
                     scope.launch {
                         runCatching {
+                            // Issue #7: dynamic builds fetch the native runtime
+                            // before the model. No-op for bundled builds.
+                            NativeBootstrap.install(context) { stage, done, total ->
+                                state = DownloadState.Running(stage, done, total)
+                            }
                             ModelDownloader.download(context, pickedVariant) { stage, done, total ->
                                 state = DownloadState.Running(stage, done, total)
                             }

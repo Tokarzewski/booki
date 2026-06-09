@@ -33,6 +33,13 @@ androidComponents.onVariants { variant ->
     }
 }
 
+// Issue #7: opt-in dynamic native library loading. When true the sherpa-onnx /
+// ONNX Runtime .so files are stripped from the APK (~25 MB smaller) and
+// downloaded + sha256-verified on first launch by runtime/NativeBootstrap.
+// Default stays false so the standard APK remains fully offline-capable.
+val dynamicNativeLibs =
+    (project.findProperty("booki.dynamicNativeLibs") as String?)?.toBoolean() ?: false
+
 android {
     namespace = "dev.booki"
     compileSdk = 36
@@ -47,6 +54,7 @@ android {
         ndk { abiFilters += setOf("arm64-v8a") }
         // Only ship English resources (Compose/AndroidX bundle ~70 locales).
         androidResources { localeFilters += listOf("en") }
+        buildConfigField("boolean", "DYNAMIC_NATIVE_LIBS", "$dynamicNativeLibs")
     }
 
     signingConfigs {
@@ -77,6 +85,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -91,6 +100,14 @@ android {
             "META-INF/LGPL2.1",
             "META-INF/DEPENDENCIES",
         )
+        if (dynamicNativeLibs) {
+            // Issue #7: ship without the native runtime; NativeBootstrap
+            // downloads it on first launch instead.
+            jniLibs.excludes += setOf(
+                "**/libsherpa-onnx-*.so",
+                "**/libonnxruntime.so",
+            )
+        }
     }
 }
 
@@ -137,4 +154,6 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for JVM unit tests (the android.jar stubs throw).
+    testImplementation("org.json:json:20240303")
 }

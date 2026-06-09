@@ -37,6 +37,7 @@ import dev.booki.data.Settings.defaultSpeed
 import dev.booki.data.Settings.defaultVoice
 import dev.booki.data.Voices
 import dev.booki.player.PlayerController
+import dev.booki.runtime.NativeBootstrap
 import dev.booki.tts.ModelDownloader
 import dev.booki.tts.Progress
 import dev.booki.tts.SynthState
@@ -60,7 +61,11 @@ private sealed interface Screen {
 @Composable
 private fun Root() {
     val context = LocalContextSafe.current
-    var provisioned by remember { mutableStateOf(ModelDownloader.anyProvisioned(context)) }
+    // A model and (in dynamic builds — issue #7) the native runtime must both
+    // be present before the home screen is usable.
+    var provisioned by remember {
+        mutableStateOf(ModelDownloader.anyProvisioned(context) && NativeBootstrap.isInstalled(context))
+    }
     var screen: Screen by remember { mutableStateOf(Screen.Home) }
 
     LaunchedEffect(Unit) {
